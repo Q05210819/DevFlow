@@ -20,6 +20,9 @@ from devflow.errors import AppError
 from devflow.github.client import GitHubClient
 from devflow.github.credentials import CredentialService
 from devflow.logging import configure_logging, log_request
+from devflow.repositories.policy import RepositoryPolicy
+from devflow.repositories.routes import router as repository_router
+from devflow.repositories.service import RepositoryService
 from devflow.security import CredentialCipher
 
 
@@ -68,6 +71,24 @@ def create_app(
                 if factory is not None and cipher is not None
                 else None
             )
+            app.state.repository_policy = (
+                RepositoryPolicy(
+                    factory, app.state.github, app.state.credential_service, configured
+                )
+                if factory is not None and app.state.credential_service is not None
+                else None
+            )
+            app.state.repository_service = (
+                RepositoryService(
+                    factory,
+                    app.state.github,
+                    app.state.credential_service,
+                    configured,
+                    policy=app.state.repository_policy,
+                )
+                if app.state.repository_policy is not None
+                else None
+            )
             app.state.auth_service = (
                 AuthService(factory, app.state.github, cipher, configured)
                 if factory is not None and cipher is not None
@@ -84,6 +105,7 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan)
     app.state.settings = configured
+    app.include_router(repository_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(audit_router)
