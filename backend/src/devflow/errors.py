@@ -14,6 +14,8 @@ ERROR_CODES = frozenset(
         "github_configuration_error",
         "reauth_required",
         "attempt_timeout",
+        "invalid_cursor",
+        "service_unavailable",
     }
 )
 RETRYABLE_ERROR_CODES = frozenset(

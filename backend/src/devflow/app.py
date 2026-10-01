@@ -1,5 +1,7 @@
 """FastAPI application factory."""
 
+import asyncio
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -8,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from devflow.config import Settings
+from devflow.db import create_session_factory, schema_is_current
 from devflow.errors import AppError
 from devflow.logging import configure_logging, log_request
 
@@ -29,8 +32,22 @@ def _error_response(
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
-    app = FastAPI()
-    app.state.settings = settings if settings is not None else Settings()
+    configured = settings if settings is not None else Settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        factory = (
+            create_session_factory(configured) if configured.database_url else None
+        )
+        app.state.session_factory = factory
+        try:
+            yield
+        finally:
+            if factory is not None:
+                await factory.kw["bind"].dispose()
+
+    app = FastAPI(lifespan=lifespan)
+    app.state.settings = configured
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):
@@ -72,6 +89,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health/live")
     def live() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/health/ready")
+    async def ready() -> dict[str, str]:
+        try:
+            async with asyncio.timeout(5):
+                factory = app.state.session_factory
+                if factory is None:
+                    raise ValueError("Database is not configured")
+                async with factory() as session:
+                    if not await schema_is_current(session):
+                        raise ValueError("Schema is not current")
+        except Exception:  # noqa: BLE001
+            raise AppError("service_unavailable", 503, "Service unavailable") from None
         return {"status": "ok"}
 
     return app
