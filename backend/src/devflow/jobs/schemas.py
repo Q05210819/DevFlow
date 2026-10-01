@@ -37,6 +37,10 @@ class EventPayload(BaseModel):
     error_code: JobErrorCode | None = None
 
 
+class EventView(EventPayload):
+    sequence: int = Field(ge=1)
+
+
 class JobView(BaseModel):
     model_config = ConfigDict(from_attributes=True, frozen=True)
     id: UUID
