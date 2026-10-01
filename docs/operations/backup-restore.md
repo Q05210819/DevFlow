@@ -1,6 +1,6 @@
 # 备份与隔离恢复
 
-数据库备份与凭据加密主密钥必须分别保管、同时可恢复。没有原 `credential_encryption_key`，数据库中的 GitHub token 无法解密；重新随机生成同名文件不能修复。本文为操作手册，Task 12A **未执行**最终恢复演练，Task 12B 必须按完整后端验证并记录证据。
+数据库备份与凭据加密主密钥必须分别保管、同时可恢复。没有原 `credential_encryption_key`，数据库中的 GitHub token 无法解密；重新随机生成同名文件不能修复。本地合成数据恢复演练及证据见 [阶段验收](foundation-acceptance.md)。
 
 ## 迁移前备份
 
@@ -44,7 +44,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Restore failed; preserve the isolated instance
 
 ## 验证计数、schema 与解密
 
-在暂停写入的源库和恢复库分别运行以下 SQL，保存输出并逐项比较；完整后端尚未建表时不能据此宣称恢复通过：
+在暂停写入的源库和恢复库分别运行以下 SQL，保存输出并逐项比较：
 
 ```sql
 SELECT version_num FROM alembic_version;
@@ -60,7 +60,15 @@ UNION ALL SELECT 'github_credentials', count(*) FROM github_credentials;
 
 例如 `docker compose @restore exec -T postgres psql -U devflow -d devflow -c 'SELECT version_num FROM alembic_version;'`。`pg_restore --list` 只能检查目录，不证明数据或加密凭据可用。
 
-始终备份完整数据库，包含序列及其状态，不能只复制业务表。后端授权先后判断使用数据库单调序列；恢复后必须核对该序列值不低于已存用户授权变更/OAuth 发起顺序值，防止撤权前后的判断倒退。最终序列名与字段随 Task 4B 合入，由 Task 12B 对照迁移文件补全并验证；仅核对计数不够。
+始终备份完整数据库，包含序列及其状态，不能只复制业务表。授权先后判断使用 `auth_change_order_seq`（CACHE 1、NO CYCLE）；恢复后在独立库执行下面检查，要求 `next_order > maximum_stored_order`。`nextval` 消耗一个序号属预期，不要将序列向下重置。当前迁移 head 为 `0004_jobs_events`，应与所恢复应用镜像一致。
+
+```sql
+SELECT nextval('auth_change_order_seq') AS next_order,
+       greatest(coalesce((SELECT max(auth_changed_order) FROM users), 0),
+                coalesce((SELECT max(started_order) FROM oauth_states), 0)) AS maximum_stored_order;
+SELECT job_id, max(sequence), count(*) FROM run_events GROUP BY job_id ORDER BY job_id;
+SELECT id, status, attempt, last_sequence FROM jobs ORDER BY id;
+```
 
 在恢复项目中用**备份对应的原密钥**运行仅解密验证的进程，不启动 Web 服务。下面从 PowerShell 传入脚本，复用 Compose 的镜像、秘密挂载与该项目网络；`--no-deps` 防止启动其他服务。数据库 URL 中 `postgres` 只解析为恢复项目 postgres。
 

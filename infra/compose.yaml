@@ -94,7 +94,9 @@ services:
       context: ..
       dockerfile_inline: |
         FROM caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
-        RUN chown -R 10001:10001 /data /config
+        # High internal ports do not need the upstream binary's file capability.
+        # Keeping it with cap_drop: ALL causes Linux execve to fail with EPERM.
+        RUN setcap -r /usr/bin/caddy && chown -R 10001:10001 /data /config
         USER 10001:10001
     environment:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL}

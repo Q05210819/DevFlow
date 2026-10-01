@@ -70,6 +70,7 @@ uv --directory backend run --env-file ../.env --no-sync python -m devflow.worker
 ```powershell
 docker compose -f infra/compose.test.yaml up -d --wait
 uv --directory backend run --no-sync ruff check .
+uv --directory backend run --no-sync ruff format --check .
 uv --directory backend run --no-sync pytest -q -m 'not live_github'
 npm.cmd --prefix frontend run typecheck
 npm.cmd --prefix frontend run lint
@@ -84,4 +85,4 @@ CI 使用隔离 PostgreSQL schema、合成 GitHub transport/秘密，无需真�
 
 ## 当前验收边界
 
-Task 12A 是后端合入前的打包准备：镜像构建和配置检查不能证明登录、Worker、SSE、空库部署或恢复链路已通过。完整后端合入后的容器/浏览器联调与恢复演练属于 Task 12B。真实 App、私有仓库及公网 HTTPS 配置尚未提供，真实接入为**未执行**。
+本地完整测试、容器与恢复演练的命令和实际结果见 [阶段验收](foundation-acceptance.md)。浏览器联调使用真实 API、Worker 和 PostgreSQL，仅 GitHub HTTP 使用合成 transport；测试端口 31847/31848 必须空闲。真实 App、私有仓库及公网 HTTPS 配置尚未提供，真实接入为**未执行**。

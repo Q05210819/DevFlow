@@ -38,6 +38,7 @@ jobs:
       - name: Backend checks (isolated PostgreSQL; synthetic GitHub fixtures)
         run: |
           uv --directory backend run --no-sync ruff check .
+          uv --directory backend run --no-sync ruff format --check .
           uv --directory backend run --no-sync pytest -q -m 'not live_github'
       - name: Frontend checks
         run: |
@@ -78,4 +79,4 @@ jobs:
           docker compose -f infra/compose.yaml build api frontend gateway
           docker run --rm --entrypoint sh devflow-backend:ci -c 'test "$(id -u)" != 0 && test -d /app/backend/migrations'
           docker run --rm --entrypoint sh devflow-frontend:ci -c 'test "$(id -u)" != 0 && test -f /app/server.js'
-          docker run --rm --entrypoint sh devflow-gateway:ci -c 'test "$(id -u)" != 0 && test -w /data && test -w /config'
+          docker run --rm --cap-drop ALL --security-opt no-new-privileges:true --entrypoint sh devflow-gateway:ci -c 'test "$(id -u)" != 0 && test -w /data && test -w /config && caddy version'

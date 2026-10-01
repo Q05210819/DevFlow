@@ -1,6 +1,6 @@
 # 部署与升级
 
-本文提供 Linux Compose 生产配置及 localhost 开发覆盖的操作步骤。Task 12A 已准备打包；完整后端合入前不要把构建成功理解为可用平台验收。Task 12B 仍需执行空库启动、重启、Worker 租约回收、浏览器联调及恢复演练。未执行真实 App 登录或外部部署。
+本文提供 Linux Compose 生产配置及 localhost 开发覆盖的操作步骤。本地执行证据及适用边界见 [阶段验收](foundation-acceptance.md)；真实 App 登录、公网 TLS 签发及外部部署尚未执行。
 
 ## 输入与秘密文件
 
@@ -54,7 +54,7 @@ Linux 文件型 Compose secrets 使用绑定挂载，`uid/gid/mode` 不会替你
 
 ## 首次部署
 
-以下是待完整后端合入后执行的步骤，不代表已经运行成功：
+部署到自己的主机时执行以下步骤；示例域名须替换为实际配置：
 
 ```bash
 docker compose --env-file .env -p devflow -f infra/compose.yaml config --quiet
@@ -70,6 +70,10 @@ curl --fail https://你的域名/health/ready
 `BOOTSTRAP_ADMIN_GITHUB_ID` 是用户数字 ID；bootstrap 仅在 users 为空时创建首任管理员与审计，不会把数据库已有用户改成管理员。不要删除 users 来修复登录。API readiness 验证数据库及镜像中迁移 head；存活 200 不等于就绪 200。
 
 API 和 Worker 使用同一个后端镜像（UID10001）；前端 standalone 使用 node 用户；gateway 使用 UID10001，监听 8080/8443，宿主机映射 80/443。Caddy 的 `/data` 持久保存证书，`/config` 也挂持久卷。PostgreSQL 使用 postgres 用户和项目独立数据卷。
+
+Caddy 上游二进制带 `cap_net_bind_service=ep`，与容器 `cap_drop: [ALL]` 同用会导致 Linux 拒绝执行。构建时移除不需要的文件能力，保留非 root、全部能力丢弃及 `no-new-privileges`；内部高端口无需该能力。启动后必须同时检查 `ps -a` 和实际网关 HTTP，不能只看 `up --wait` 的退出码：没有 healthcheck 的服务可能在命令返回后立即失败。
+
+Worker 生命周期审计的 `actor_id` 为 `null`（系统），保留 `job_id` 和资源 ID；原提交者由 `jobs.requested_by` 及 `job.submitted` 审计关联。正常 SIGTERM 停止领取并最多等待 30 秒；未完成任务保留租约，后续 Worker 按数据库时间回收。强杀恢复会增加尝试次数，旧租约不能写回状态、事件或作业审计。
 
 Caddy 原样转发 `/api/*`、`/health/*` 到 API，其余到前端。`flush_interval -1` 立即发送流数据，未设置会截断长 SSE 的整体请求时限。没有启用网关访问日志；API 始终使用 `--no-access-log`。增加外部代理时必须继续避免记录 OAuth query、Cookie、Authorization，且保留 SSE 心跳。[Caddy reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)
 

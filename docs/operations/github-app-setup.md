@@ -50,4 +50,8 @@ Compose 自动映射文件到 `/run/secrets/*`；本地进程使用主机绝对�
 4. 移除仓库安装权限、停用/卸载安装、撤销用户 App 授权，分别检查 GitHub Recent deliveries 和平台权限拒绝；旧结果不能继续读取。
 5. 记录环境、时间、观察值及证据；重启恢复和备份演练见 [备份与恢复](backup-restore.md)。
 
-上述路由与 [已批准 API 合同](../superpowers/specs/2026-09-30-devflow-foundation-design.md#7-数据表与-api-边界) 对齐。Task 12A 基线尚未合入全部路由与 Worker，实际注册/redirect_uri/webhook action 的联调须由 Task 12B 核对。不能将离线 transport、浏览器拦截或镜像构建报告成真实 GitHub 接入成功。
+恢复安装、重新加入仓库等 webhook 只把资源置为待验证（`needs_verification`），不会直接恢复访问。管理员必须在仓库页面明确重新接入；后端重新验证 GitHub 权限及本地版本后恢复原仓库 UUID。单纯刷新发现列表不会恢复授权。
+
+用户撤权和 OAuth 发起共享数据库 `auth_change_order_seq`（CACHE 1、NO CYCLE），分别记录 `users.auth_changed_order` 和 `oauth_states.started_order`。撤权前发起的迟到回调不能恢复授权；`auth_changed_at` 仅保留审计时间，不用于决定先后。备份恢复必须保留序列状态，详见 [备份与恢复](backup-restore.md)。
+
+上述路由与 [已批准 API 合同](../superpowers/specs/2026-09-30-devflow-foundation-design.md#7-数据表与-api-边界) 对齐。离线 transport、浏览器拦截与镜像构建不能证明真实 GitHub 接入成功；已执行项目和剩余输入见 [阶段验收](foundation-acceptance.md)。
