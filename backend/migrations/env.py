@@ -9,6 +9,7 @@ from devflow.audit import models as audit_models  # noqa: F401
 from devflow.auth import models as auth_models  # noqa: F401
 from devflow.db import Base
 from devflow.github import models as github_models  # noqa: F401
+from devflow.jobs import models as job_models  # noqa: F401
 from devflow.repositories import models as repository_models  # noqa: F401
 
 config = context.config

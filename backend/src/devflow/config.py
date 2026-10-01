@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     oauth_state_ttl_seconds: int = Field(default=600, gt=0)
     session_ttl_seconds: int = Field(default=28800, gt=0)
     permission_cache_ttl_seconds: int = Field(default=60, ge=0, le=60)
-    job_max_attempts: int = Field(default=3, gt=0)
+    job_max_attempts: int = Field(default=3, gt=0, le=3)
     job_retry_first_seconds: int = Field(default=10, gt=0)
     job_retry_second_seconds: int = Field(default=30, gt=0)
     job_lease_seconds: int = Field(default=30, gt=0)

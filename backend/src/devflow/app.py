@@ -21,6 +21,8 @@ from devflow.github.client import GitHubClient
 from devflow.github.credentials import CredentialService
 from devflow.github.webhooks import WebhookService
 from devflow.github.webhooks import router as webhook_router
+from devflow.jobs.routes import router as job_router
+from devflow.jobs.service import JobService
 from devflow.logging import configure_logging, log_request
 from devflow.repositories.policy import RepositoryPolicy
 from devflow.repositories.routes import router as repository_router
@@ -96,6 +98,15 @@ def create_app(
                 if factory is not None and cipher is not None
                 else None
             )
+            app.state.job_service = (
+                JobService(
+                    factory,
+                    app.state.repository_policy,
+                    max_attempts=configured.job_max_attempts,
+                )
+                if app.state.repository_policy is not None
+                else None
+            )
             app.state.webhook_service = (
                 WebhookService(
                     factory, read_secret_file(configured.github_webhook_secret_file)
@@ -117,6 +128,7 @@ def create_app(
     app.state.settings = configured
     app.include_router(webhook_router)
     app.include_router(repository_router)
+    app.include_router(job_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(audit_router)

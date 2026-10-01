@@ -1,0 +1,1 @@
+"""Durable repository access checks."""
