@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+:root { color-scheme: light; background: #f6f7f9; color: #182330; font-family: Arial, "Microsoft YaHei", sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+a { color: #174fa1; text-decoration: none; }
+a:hover { text-decoration: underline; }
+button, input, select { font: inherit; }
+button, .primary-link { border: 1px solid #b8c2d0; border-radius: 5px; padding: .55rem .85rem; background: #fff; cursor: pointer; display: inline-block; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button:hover:not(:disabled) { background: #edf2f8; }
+:focus-visible { outline: 3px solid #3574c6; outline-offset: 3px; }
+h1 { font-size: 1.8rem; font-weight: 650; margin: .5rem 0 1rem; }
+p { line-height: 1.7; color: #4b5c70; }
+.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; flex-wrap: wrap; gap: 1.75rem; min-height: 76px; padding: 1rem 2rem; background: #fff; border-bottom: 1px solid #d9dfe7; }
+.brand { color: #182330; font-weight: 800; letter-spacing: .08em; }
+.topbar nav { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+.account { margin-left: auto; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+.text-button { color: #174fa1; }
+.content { max-width: 1200px; padding: 2.5rem 2rem; margin: 0 auto; }
+.eyebrow { color: #52657d; font-size: .8rem; letter-spacing: .08em; }
+.login-card, .message-card { max-width: 520px; margin: 12vh auto; padding: 2rem; background: white; border: 1px solid #d9dfe7; border-radius: 8px; }
+.primary-link, .primary-button { background: #184c88; color: white; border-color: #184c88; }
+.primary-button:hover:not(:disabled) { background: #123e72; }
+.primary-link { margin-top: 1.2rem; }
+.panel { background: #fff; border: 1px solid #d9dfe7; border-radius: 6px; padding: 1.25rem; }
+.member-form { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; margin: 1.5rem 0; }
+label { display: flex; flex-direction: column; gap: .5rem; font-size: .9rem; }
+input, select { background: #fff; border: 1px solid #aab6c5; border-radius: 4px; padding: .55rem; min-height: 42px; }
+.table-wrap { width: 100%; overflow-x: auto; border: 1px solid #d9dfe7; border-radius: 6px; background: #fff; margin-top: 1.5rem; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #e5e9ee; white-space: nowrap; }
+thead th { background: #edf1f6; color: #41536a; font-weight: 600; }
+tbody th { font-weight: 600; }
+tbody tr:last-child > * { border-bottom: 0; }
+.row-actions button + button { margin-left: .5rem; }
+.pagination { display: flex; align-items: center; justify-content: flex-end; gap: 1rem; padding-top: 1.25rem; }
+.banner { padding: .8rem 1rem; background: #eaf3eb; color: #235d34; border-radius: 4px; }
+.error { background: #fff0ed; color: #983726; }
+.empty-state { text-align: center; padding: 2rem; }
+@media (max-width: 650px) {
+  .topbar { gap: 1rem; padding: 1rem; }
+  .topbar nav { order: 3; width: 100%; }
+  .account { font-size: .85rem; gap: .5rem; }
+  .content { padding: 1.5rem 1rem; }
+  .login-card, .message-card { margin: 8vh 1rem; }
+  .member-form label { width: 100%; }
+  .member-form button { width: 100%; }
+}
