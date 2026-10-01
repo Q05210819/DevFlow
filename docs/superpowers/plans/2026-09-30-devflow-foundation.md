@@ -157,11 +157,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 **Interfaces:** `handle_webhook(raw_body: bytes, signature: str, delivery_id: str, event_name: str) -> None`：先验证原始字节签名，再解析允许字段，在一个事务中去重、失效和写审计；有效处理/重复均返回 204。模型只保存白名单字段与状态，不保存无边界原文。
 
-- [ ] **1. 写失败测试。** `test_bad_signature_does_not_reserve_delivery`: 无效签名 401，`assert valid_delivery_count == 0`，同 ID 后续有效事件可处理；`test_duplicate_delivery_is_atomic`: 并发有效重复只有一份失效事件。`test_uninstall_or_repository_remove_invalidates_access`: `assert policy_denied`；`test_user_revocation_cannot_be_undone_by_late_refresh`: 刷新或登录迟到不能恢复被撤销版本；`test_old_restore_requires_live_verification`: 旧新增事件不能直接激活授权。
-- [ ] **2. 验证失败。** `uv --directory backend run pytest tests/integration/test_webhooks.py tests/test_csrf.py tests/integration/test_credential_refresh.py -q`。
-- [ ] **3. 实现生命周期处理。** 接受规格规定三类事件，相关 action 显式分支；`suspend/deleted`、移除仓库和用户撤权立即增加数据库授权版本；用户撤权同时使凭据/会话失效。`created/unsuspend/added` 仅要求在线复核；未知但有效事件记录忽略结果。关联判断使用 installation ID、repository ID 或 GitHub user ID，不使用显示名。
-- [ ] **4. 验证事务失败和跨进程失效。** 注入数据库失败返回 503 且不确认 delivery；有效事件无需浏览器 CSRF；两套独立策略缓存实例在本地版本更新后都拒绝访问。重复第 2 步，审计拒绝路径不得存签名秘密、token 或原始 payload。
-- [ ] **5. 提交。** `feat: handle github authorization lifecycle webhooks`。
+- [x] **1. 写失败测试。** `test_bad_signature_does_not_reserve_delivery`: 无效签名 401，`assert valid_delivery_count == 0`，同 ID 后续有效事件可处理；`test_duplicate_delivery_is_atomic`: 并发有效重复只有一份失效事件。`test_uninstall_or_repository_remove_invalidates_access`: `assert policy_denied`；`test_user_revocation_cannot_be_undone_by_late_refresh`: 刷新或登录迟到不能恢复被撤销版本；`test_old_restore_requires_live_verification`: 旧新增事件不能直接激活授权。
+- [x] **2. 验证失败。** `uv --directory backend run pytest tests/integration/test_webhooks.py tests/test_csrf.py tests/integration/test_credential_refresh.py -q`。
+- [x] **3. 实现生命周期处理。** 接受规格规定三类事件，相关 action 显式分支；`suspend/deleted`、移除仓库和用户撤权立即增加数据库授权版本；用户撤权同时使凭据/会话失效。`created/unsuspend/added` 仅要求在线复核；未知但有效事件记录忽略结果。关联判断使用 installation ID、repository ID 或 GitHub user ID，不使用显示名。
+- [x] **4. 验证事务失败和跨进程失效。** 注入数据库失败返回 503 且不确认 delivery；有效事件无需浏览器 CSRF；两套独立策略缓存实例在本地版本更新后都拒绝访问。重复第 2 步，审计拒绝路径不得存签名秘密、token 或原始 payload。
+- [x] **5. 提交。** `feat: handle github authorization lifecycle webhooks`。
 
 ## Task 7: 幂等作业提交与持久事件
 
