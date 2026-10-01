@@ -119,11 +119,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 依据：[安装与仓库接口](https://docs.github.com/en/rest/apps/installations)、[App 安装核验](https://docs.github.com/en/rest/apps/apps#get-an-installation-for-the-authenticated-app)、[刷新凭据](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)。刷新成功后必须一起替换 token 对，不能继续使用旧 access token。[限流分类](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit) 先于一般权限错误分类。
 
-- [ ] **1. 写失败测试。** `test_github_rate_limit_classification`: primary 403、secondary 403/429、普通权限 403 分别映射可重试错误/不可见；`assert retry_at >= provider_deadline`，无等待头的 secondary limit 至少等待 60 秒。`test_refresh_failure_classification`: `bad_refresh_token` 要求重授权，`incorrect_client_credentials` 为配置故障，timeout/5xx 为暂不可用；`assert installation_fallback_calls == 0`。`test_cross_process_refresh_once`: 两个真实数据库连接在屏障后争用，`assert refresh_requests == 1` 且新 token 对原子保存；迟到失败不能清除新版本。`test_ciphertext_and_logs_hide_tokens`: 数据库密文和输出不含哨兵明文。
-- [ ] **2. 验证失败。** `uv --directory backend run pytest tests/test_github_client.py tests/test_secret_storage.py tests/integration/test_credential_refresh.py -q`；HTTPX MockTransport 提供明确响应，不连接真实 GitHub。
-- [ ] **3. 实现官方端点边界。** REST 固定 `https://api.github.com`，OAuth 固定 `https://github.com/login/oauth/access_token`；App JWT 使用 PyJWT 与部署私钥。验证安装响应 ID、app ID、suspended 状态；请求 JSON/权限错误结构受控解析。HTTP 每次调用 10 秒总超时，客户端不隐式循环重试，由任务层决策。分页仅提取可信 `Link rel=next` 中的页码，不跟随任意主机链接。
-- [ ] **4. 实现并发刷新并验证。** Fernet 加密凭据；凭据行锁覆盖重新读取、有限时刷新和原子替换；各进程共用数据库锁，获取锁后先检查新版本。终态凭据错误条件更新当前版本；超时不清空凭据；若远端已轮换但响应丢失，后续明确无效时要求重新授权。重复第 2 步测试，增加等待刷新期间撤权/旧 token 请求失败不覆盖新版本的断言。
-- [ ] **5. 提交。** `feat: add github client and safe credential rotation`。
+- [x] **1. 写失败测试。** `test_github_rate_limit_classification`: primary 403、secondary 403/429、普通权限 403 分别映射可重试错误/不可见；`assert retry_at >= provider_deadline`，无等待头的 secondary limit 至少等待 60 秒。`test_refresh_failure_classification`: `bad_refresh_token` 要求重授权，`incorrect_client_credentials` 为配置故障，timeout/5xx 为暂不可用；`assert installation_fallback_calls == 0`。`test_cross_process_refresh_once`: 两个真实数据库连接在屏障后争用，`assert refresh_requests == 1` 且新 token 对原子保存；迟到失败不能清除新版本。`test_ciphertext_and_logs_hide_tokens`: 数据库密文和输出不含哨兵明文。
+- [x] **2. 验证失败。** `uv --directory backend run pytest tests/test_github_client.py tests/test_secret_storage.py tests/integration/test_credential_refresh.py -q`；HTTPX MockTransport 提供明确响应，不连接真实 GitHub。
+- [x] **3. 实现官方端点边界。** REST 固定 `https://api.github.com`，OAuth 固定 `https://github.com/login/oauth/access_token`；App JWT 使用 PyJWT 与部署私钥。验证安装响应 ID、app ID、suspended 状态；请求 JSON/权限错误结构受控解析。HTTP 每次调用 10 秒总超时，客户端不隐式循环重试，由任务层决策。分页仅提取可信 `Link rel=next` 中的页码，不跟随任意主机链接。
+- [x] **4. 实现并发刷新并验证。** Fernet 加密凭据；凭据行锁覆盖重新读取、有限时刷新和原子替换；各进程共用数据库锁，获取锁后先检查新版本。终态凭据错误条件更新当前版本；超时不清空凭据；若远端已轮换但响应丢失，后续明确无效时要求重新授权。重复第 2 步测试，增加等待刷新期间撤权/旧 token 请求失败不覆盖新版本的断言。
+- [x] **5. 提交。** `feat: add github client and safe credential rotation`。
 
 ## Task 4: 登录、会话与成员管理
 
