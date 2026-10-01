@@ -1,0 +1,22 @@
+# Compose >=2.24.4: !override replaces public ports instead of appending to them.
+services:
+  gateway:
+    environment:
+      PUBLIC_BASE_URL: http://localhost:8080
+    ports: !override
+      - "127.0.0.1:8080:8080"
+  api:
+    environment:
+      APP_ENV: development
+      PUBLIC_BASE_URL: http://localhost:8080
+  worker:
+    environment:
+      APP_ENV: development
+      PUBLIC_BASE_URL: http://localhost:8080
+  migrate:
+    environment:
+      APP_ENV: development
+      PUBLIC_BASE_URL: http://localhost:8080
+  postgres:
+    ports:
+      - "127.0.0.1:55440:5432"

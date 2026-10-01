@@ -1,0 +1,135 @@
+name: devflow
+
+x-backend: &backend
+  image: devflow-backend:${DEVFLOW_IMAGE_TAG:-local}
+  build:
+    context: ..
+    dockerfile: infra/backend.Dockerfile
+  environment: &backend-environment
+    APP_ENV: production
+    PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL}
+    BOOTSTRAP_ADMIN_GITHUB_ID: ${BOOTSTRAP_ADMIN_GITHUB_ID:?Set bootstrap GitHub ID}
+    GITHUB_APP_ID: ${GITHUB_APP_ID:?Set GitHub App ID}
+    GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?Set GitHub Client ID}
+    GITHUB_ALLOWED_INSTALLATION_IDS: ${GITHUB_ALLOWED_INSTALLATION_IDS:?Set installation IDs JSON array}
+    GITHUB_CLIENT_SECRET_FILE: /run/secrets/github_client_secret
+    GITHUB_PRIVATE_KEY_FILE: /run/secrets/github_private_key
+    GITHUB_WEBHOOK_SECRET_FILE: /run/secrets/github_webhook_secret
+    CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
+    APP_SIGNING_KEY_FILE: /run/secrets/app_signing_key
+    WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+  secrets:
+    - database_url
+    - github_client_secret
+    - github_private_key
+    - github_webhook_secret
+    - credential_encryption_key
+    - app_signing_key
+  init: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+
+services:
+  postgres:
+    image: postgres:17.11@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+    user: postgres
+    environment:
+      POSTGRES_USER: devflow
+      POSTGRES_DB: devflow
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U devflow -d devflow]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  migrate:
+    <<: *backend
+    command: [sh, -eu, -c, 'uv run --no-sync alembic upgrade head && uv run --no-sync python -m devflow.bootstrap']
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
+  api:
+    <<: *backend
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, uv, run, --no-sync, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=6).close()"]
+      interval: 10s
+      timeout: 8s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    <<: *backend
+    command: [uv, run, --no-sync, python, -m, devflow.worker]
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    image: devflow-frontend:${DEVFLOW_IMAGE_TAG:-local}
+    build:
+      context: ..
+      dockerfile: infra/frontend.Dockerfile
+    init: true
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  gateway:
+    image: devflow-gateway:${DEVFLOW_IMAGE_TAG:-local}
+    build:
+      context: ..
+      dockerfile_inline: |
+        FROM caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
+        RUN chown -R 10001:10001 /data /config
+        USER 10001:10001
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL}
+    ports:
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api: {condition: service_healthy}
+      frontend: {condition: service_started}
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:
+
+# Host source paths are runtime-only. Prefer an absolute directory outside this repo.
+secrets:
+  database_url:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/database_url
+  postgres_password:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/postgres_password
+  github_client_secret:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/github_client_secret
+  github_private_key:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/github_private_key
+  github_webhook_secret:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/github_webhook_secret
+  credential_encryption_key:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/credential_encryption_key
+  app_signing_key:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/app_signing_key

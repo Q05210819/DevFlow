@@ -1,0 +1,22 @@
+{
+	admin off
+	# Upstream failure logs include the complete request URI, even without access logs.
+	log default {
+		exclude http.log.error
+	}
+	http_port 8080
+	https_port 8443
+}
+
+{$PUBLIC_BASE_URL} {
+	# Access logs stay disabled: OAuth callback query strings contain secrets.
+	@backend path /api/* /health/*
+	handle @backend {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

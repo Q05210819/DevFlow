@@ -1,0 +1,81 @@
+name: CI
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17.11@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+        env:
+          POSTGRES_USER: devflow_test
+          POSTGRES_PASSWORD: devflow_test
+          POSTGRES_DB: devflow_test
+        ports: [55439:5432]
+        options: >-
+          --health-cmd "pg_isready -U devflow_test -d devflow_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://devflow_test:devflow_test@127.0.0.1:55439/devflow_test
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.11.25"
+          python-version: "3.12.13"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.21.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Locked dependencies
+        run: |
+          uv --directory backend sync --locked
+          npm --prefix frontend ci
+      - name: Backend checks (isolated PostgreSQL; synthetic GitHub fixtures)
+        run: |
+          uv --directory backend run --no-sync ruff check .
+          uv --directory backend run --no-sync pytest -q -m 'not live_github'
+      - name: Frontend checks
+        run: |
+          npm --prefix frontend run typecheck
+          npm --prefix frontend run lint
+          npm --prefix frontend run build
+          cd frontend
+          npx --no-install playwright install --with-deps chromium
+          npm run test:e2e
+      - name: Synthetic packaging inputs (never GitHub credentials)
+        run: |
+          uv --directory backend run --no-sync python - <<'PY'
+          import os, secrets
+          from pathlib import Path
+          from cryptography.fernet import Fernet
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+          target = Path(os.environ['GITHUB_WORKSPACE']) / '.cache' / 'ci-secrets'
+          target.mkdir(parents=True, exist_ok=True)
+          values = {
+              'database_url': b'postgresql+psycopg://devflow:synthetic@postgres:5432/devflow',
+              'postgres_password': b'synthetic',
+              'github_client_secret': secrets.token_hex(32).encode(),
+              'github_webhook_secret': secrets.token_hex(32).encode(),
+              'app_signing_key': secrets.token_hex(32).encode(),
+              'credential_encryption_key': Fernet.generate_key(),
+              'github_private_key': rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()),
+          }
+          for name, value in values.items():
+              (target / name).write_bytes(value)
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write(f'DEVFLOW_SECRETS_DIR={target}\nPUBLIC_BASE_URL=https://devflow.invalid\nBOOTSTRAP_ADMIN_GITHUB_ID=1\nGITHUB_APP_ID=1\nGITHUB_CLIENT_ID=synthetic\nGITHUB_ALLOWED_INSTALLATION_IDS=[1]\nDEVFLOW_IMAGE_TAG=ci\n')
+          PY
+      - name: Compose validation and production images
+        run: |
+          docker compose -f infra/compose.yaml config --quiet
+          docker compose -f infra/compose.yaml -f infra/compose.dev.yaml config --quiet
+          docker compose -f infra/compose.yaml build api frontend gateway
+          docker run --rm --entrypoint sh devflow-backend:ci -c 'test "$(id -u)" != 0 && test -d /app/backend/migrations'
+          docker run --rm --entrypoint sh devflow-frontend:ci -c 'test "$(id -u)" != 0 && test -f /app/server.js'
+          docker run --rm --entrypoint sh devflow-gateway:ci -c 'test "$(id -u)" != 0 && test -w /data && test -w /config'
