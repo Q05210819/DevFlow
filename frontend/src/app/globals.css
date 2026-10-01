@@ -38,6 +38,22 @@ tbody tr:last-child > * { border-bottom: 0; }
 .banner { padding: .8rem 1rem; background: #eaf3eb; color: #235d34; border-radius: 4px; }
 .error { background: #fff0ed; color: #983726; }
 .empty-state { text-align: center; padding: 2rem; }
+.repository-grid { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 1rem; margin: 1.5rem 0; }
+.repository-card { min-width: 0; overflow-wrap: anywhere; }
+.repository-card h2, .repository-card h3, .job-details h2 { font-size: 1.15rem; font-weight: 650; }
+.repository-connect { margin: 1.5rem 0; }
+.repository-connect h2, .job-progress h2 { font-size: 1.2rem; font-weight: 650; }
+.job-details { max-width: 760px; }
+.job-details dl { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: .65rem 1rem; margin: 1rem 0; }
+.job-details dt { color: #52657d; }
+.job-details dd { margin: 0; overflow-wrap: anywhere; }
+.probe-result { border-top: 1px solid #d9dfe7; padding-top: 1rem; }
+.probe-result h3 { font-weight: 650; }
+.job-progress { margin-top: 1.5rem; }
+.job-progress ol { padding: 0; list-style: none; }
+.job-progress li { margin-top: .75rem; line-height: 1.8; }
+.sequence { display: inline-block; min-width: 1.8rem; text-align: center; color: #174fa1; background: #e6edf7; border-radius: 50%; }
+.back-link { display: inline-block; margin-top: 1.5rem; }
 @media (max-width: 650px) {
   .topbar { gap: 1rem; padding: 1rem; }
   .topbar nav { order: 3; width: 100%; }

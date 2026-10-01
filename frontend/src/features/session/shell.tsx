@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useSession } from "./use-session";
 
 export function LoginEntry() {
@@ -24,6 +24,7 @@ export function ProtectedShell({ children, adminOnly = false }: { children: Reac
       <Link className="brand" href="/">DEVFLOW</Link>
       <nav aria-label="主导航">
         <Link href="/">概览</Link>
+        <Link href="/repositories">仓库</Link>
         {session.user.role === "admin" && <>
           <Link href="/admin/users">成员管理</Link>
           <Link href="/admin/audit">审计日志</Link>
@@ -37,6 +38,6 @@ export function ProtectedShell({ children, adminOnly = false }: { children: Reac
     {logoutError && <p className="banner error" role="alert">退出失败，请重试。</p>}
     {adminOnly && session.user.role !== "admin"
       ? <main className="message-card" role="alert"><h1>无权访问管理页面</h1><p>该页面仅供管理员使用。</p></main>
-      : children}
+      : <Fragment key={session.user.id}>{children}</Fragment>}
   </div>;
 }

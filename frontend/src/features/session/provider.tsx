@@ -23,6 +23,7 @@ export function registerEventConnection(connection: EventSource) {
 
 function SessionState({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
+  const [signedOut, setSignedOut] = useState(false);
   const sessionQuery = useQuery({
     queryKey: ["session"],
     queryFn: async ({ signal }): Promise<Session | null> => {
@@ -41,6 +42,8 @@ function SessionState({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     await api<void>("/api/v1/auth/logout", { method: "POST" });
+    // Hide private component state even if the document navigation is delayed.
+    setSignedOut(true);
     await queryClient.cancelQueries();
     for (const connection of eventConnections) connection.close();
     eventConnections.clear();
@@ -50,9 +53,9 @@ function SessionState({ children }: { children: React.ReactNode }) {
   }, [queryClient]);
 
   return <SessionContext.Provider value={{
-    session: sessionQuery.data ?? null,
-    isLoading: sessionQuery.isLoading,
-    error: sessionQuery.isError,
+    session: signedOut ? null : sessionQuery.data ?? null,
+    isLoading: !signedOut && sessionQuery.isLoading,
+    error: !signedOut && sessionQuery.isError,
     logout,
   }}>{children}</SessionContext.Provider>;
 }
