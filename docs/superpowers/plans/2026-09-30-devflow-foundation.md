@@ -193,11 +193,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 **Interfaces:** `EventView(sequence: int, status: JobStatus, attempt: int, error_code: str | None)`；`read_events(actor: Actor, job_id: UUID, after: int, limit: int = 100) -> list[EventView]`；`stream_job_events(request: Request, actor: Actor, job_id: UUID, after: int) -> AsyncIterator[str]`。路由在创建 StreamingResponse 前完成授权和游标校验；stream 内每轮重新检查会话和本地授权版本。
 
-- [ ] **1. 写失败测试。** `test_sse_auth_before_headers_or_data`: 无权/过期会话在发送任何事件前 404/401；`test_sse_replay_and_header_priority`: after=0、Last-Event-ID=2 时 `assert received_sequences == [3,4]`；`test_sse_rejects_invalid_cursor`: 负数、非整数、超出当前 last_sequence 返回 400。`test_sse_local_revoke_and_expiry`: 本地撤权下一读取循环结束、远端权限到 60 秒必须复核；`test_terminal_cursor_closes_without_replay`: 已消费终态不再发送旧事件。
-- [ ] **2. 验证失败。** `uv --directory backend run pytest tests/integration/test_sse.py -q`。测试读取流而不等到无限响应结束；时间等待可注入受控 scheduler，授权时间仍按数据库记录校验，不靠扩大超时过测试。
-- [ ] **3. 实现流协议。** `id: <sequence>`、`event: job.status`、`data: <JSON>`；每 1 秒读持久事件、每 15 秒发注释心跳。禁止长时间持有数据库事务或连接；每次查询后释放 session。断开只停止投递，不取消 Job。读取与投递前检查最新本地授权，远端授权过期时先复核再投递。
-- [ ] **4. 验证终态和错误控制。** 权限失效发无 id、无私有数据的 `event: access_lost` 后关闭；终态发完关闭，已消费终态立即关闭。增加 API 实例重建后仍能回放数据库事件的测试，断言旧游标不触发重复分析。重复第 2 步；检查 Content-Type、Cache-Control 和无缓冲要求。
-- [ ] **5. 提交。** `feat: stream durable job events with authorization checks`。
+- [x] **1. 写失败测试。** `test_sse_auth_before_headers_or_data`: 无权/过期会话在发送任何事件前 404/401；`test_sse_replay_and_header_priority`: after=0、Last-Event-ID=2 时 `assert received_sequences == [3,4]`；`test_sse_rejects_invalid_cursor`: 负数、非整数、超出当前 last_sequence 返回 400。`test_sse_local_revoke_and_expiry`: 本地撤权下一读取循环结束、远端权限到 60 秒必须复核；`test_terminal_cursor_closes_without_replay`: 已消费终态不再发送旧事件。
+- [x] **2. 验证失败。** `uv --directory backend run pytest tests/integration/test_sse.py -q`。测试读取流而不等到无限响应结束；时间等待可注入受控 scheduler，授权时间仍按数据库记录校验，不靠扩大超时过测试。
+- [x] **3. 实现流协议。** `id: <sequence>`、`event: job.status`、`data: <JSON>`；每 1 秒读持久事件、每 15 秒发注释心跳。禁止长时间持有数据库事务或连接；每次查询后释放 session。断开只停止投递，不取消 Job。读取与投递前检查最新本地授权，远端授权过期时先复核再投递。
+- [x] **4. 验证终态和错误控制。** 权限失效发无 id、无私有数据的 `event: access_lost` 后关闭；终态发完关闭，已消费终态立即关闭。增加 API 实例重建后仍能回放数据库事件的测试，断言旧游标不触发重复分析。重复第 2 步；检查 Content-Type、Cache-Control 和无缓冲要求。
+- [x] **5. 提交。** `feat: stream durable job events with authorization checks`。
 
 ## Task 10: 前端会话与管理页面
 
