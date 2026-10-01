@@ -55,6 +55,7 @@ class Settings(BaseSettings):
             or not url.hostname
             or url.username
             or url.password
+            or url.path not in {"", "/"}
             or url.query
             or url.fragment
         ):

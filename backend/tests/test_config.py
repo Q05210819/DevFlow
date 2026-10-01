@@ -29,6 +29,11 @@ def test_development_http_requires_loopback(settings_factory):
     assert settings.public_base_url == "http://127.0.0.1:3000"
 
 
+def test_public_base_url_rejects_path(settings_factory):
+    with pytest.raises(ValidationError):
+        settings_factory(public_base_url="https://devflow.example/app")
+
+
 def test_allowed_installations_parse_json_integer_array(settings_factory):
     settings = settings_factory(github_allowed_installation_ids="[42, 99]")
     assert settings.github_allowed_installation_ids == [42, 99]
