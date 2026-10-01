@@ -145,11 +145,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 **Interfaces:** 消费任务 2 的 Page/cursor 和任务 3 的 GitHubClient/CredentialService。`RepositoryView(id: UUID, github_repository_id: int, installation_id: int, full_name: str, private: bool, default_branch: str | None)`；`CandidateRepository` 在 repositories/schemas.py 定义，字段为 RepositoryView 去掉平台 id。`RepositoryService.discover(actor: Actor, limit: int, cursor: str | None) -> Page[CandidateRepository]`、`.register(actor: Actor, installation_id: int, github_repository_id: int) -> RepositoryView`、`.list_enabled(actor: Actor, limit: int, cursor: str | None) -> Page[RepositoryView]`。`RepositoryPolicy.require(actor: Actor, repository_id: UUID, *, fresh: bool = False) -> RepositoryView` 是所有仓库业务调用入口。
 
-- [ ] **1. 写失败测试。** `test_discovery_follows_both_pagination_levels`: 允许安装在第 2 页、目标仓库也在第 2 页，`assert target_id in discovered_ids`；过滤空页仍继续。`test_cursor_bound_to_actor_and_query`: B 使用 A 游标或篡改用途/limit 时 400 且无数据。`test_admin_cannot_bypass_github_access`: App 可访问但用户列表无目标 ID，`assert response.status_code == 404`；安装令牌零次兜底。`test_numeric_id_binding`: 同名不同 ID 拒绝，原 ID 改名保持同一平台记录。
-- [ ] **2. 验证失败。** `uv --directory backend run pytest tests/test_pagination.py tests/integration/test_repository_discovery.py tests/integration/test_repository_access.py -q`。
-- [ ] **3. 实现发现与注册。** user installations 与 installation repositories 两层分页，固定上游 `per_page=100`；应用游标签名并绑定 actor、用途、limit、允许安装配置版本、上游页与页内偏移，不包含 token。安装配置白名单、在线安装核验、用户列表中的仓库数字 ID 缺一不可。仓库表区分平台 enabled 和远端 available 状态；唯一 GitHub repo ID，允许转移/改名时更新经重新核验的归属，不重复建同一仓库。
-- [ ] **4. 实现统一策略并验证。** 本地身份、安装及仓库版本每次从数据库读取；正向缓存最多 60 秒，撤权版本变化立即失效，fresh 必查远端。限流/超时不给旧缓存续期；普通 403/404 对外不可见。注册仅 admin，幂等重复返回同一 UUID。补充 `test_cache_expiry_and_local_version_invalidation`、`test_user_list_filters_private_repositories`，重复第 2 步；分页后的输出仍再次按授权过滤，不能泄露不可见项计数。
-- [ ] **5. 提交。** `feat: add repository onboarding and user scoped authorization`。
+- [x] **1. 写失败测试。** `test_discovery_follows_both_pagination_levels`: 允许安装在第 2 页、目标仓库也在第 2 页，`assert target_id in discovered_ids`；过滤空页仍继续。`test_cursor_bound_to_actor_and_query`: B 使用 A 游标或篡改用途/limit 时 400 且无数据。`test_admin_cannot_bypass_github_access`: App 可访问但用户列表无目标 ID，`assert response.status_code == 404`；安装令牌零次兜底。`test_numeric_id_binding`: 同名不同 ID 拒绝，原 ID 改名保持同一平台记录。
+- [x] **2. 验证失败。** `uv --directory backend run pytest tests/test_pagination.py tests/integration/test_repository_discovery.py tests/integration/test_repository_access.py -q`。
+- [x] **3. 实现发现与注册。** user installations 与 installation repositories 两层分页，固定上游 `per_page=100`；应用游标签名并绑定 actor、用途、limit、允许安装配置版本、上游页与页内偏移，不包含 token。安装配置白名单、在线安装核验、用户列表中的仓库数字 ID 缺一不可。仓库表区分平台 enabled 和远端 available 状态；唯一 GitHub repo ID，允许转移/改名时更新经重新核验的归属，不重复建同一仓库。
+- [x] **4. 实现统一策略并验证。** 本地身份、安装及仓库版本每次从数据库读取；正向缓存最多 60 秒，撤权版本变化立即失效，fresh 必查远端。限流/超时不给旧缓存续期；普通 403/404 对外不可见。注册仅 admin，幂等重复返回同一 UUID。补充 `test_cache_expiry_and_local_version_invalidation`、`test_user_list_filters_private_repositories`，重复第 2 步；分页后的输出仍再次按授权过滤，不能泄露不可见项计数。
+- [x] **5. 提交。** `feat: add repository onboarding and user scoped authorization`。
 
 ## Task 6: Webhook 撤权与生命周期一致性
 
