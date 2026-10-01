@@ -133,11 +133,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 响应补充约定：OAuth start 为 302、成功 callback 为 303；未允许成员登录 403；logout 204；新增允许成员 201、重复 GitHub ID 409；成员修改 200、最后管理员约束冲突 409。POST repositories 新注册 201、已存在且仍可访问时 200。所有拒绝分支仍使用共同错误体。
 
-- [ ] **1. 写失败测试。** `test_oauth_state_is_single_use_and_browser_bound`: 错误浏览器/重复回调无 session，10 分钟边界失效；`test_login_requires_allowlist`: 未允许的 GitHub ID 无 session。`test_session_expires_and_logout_invalidates`: 第 8 小时与注销后返回 401；`test_last_admin_concurrent_changes`: 两个连接并发降级/停用后 `assert active_admin_count >= 1`。`test_member_disabled_while_login_inflight`: 回调不能重新启用被停用成员。
-- [ ] **2. 验证失败。** `uv --directory backend run pytest tests/test_csrf.py tests/integration/test_auth.py tests/integration/test_sessions.py tests/integration/test_members.py -q`。允许名单、PKCE、clock 边界用确定输入，数据库并发用屏障，不用长 sleep。
-- [ ] **3. 实现登录与会话。** 一次性 state、浏览器 nonce、短期加密 PKCE verifier；用原子消费阻止双回调，身份核对使用 GitHub ID。生成 32 字节随机 session token，数据库存 SHA-256；会话 CSRF 使用独立 `APP_SIGNING_KEY` 的标准 HMAC，按用途区分，不复用凭据加密密钥。加入 GET session、POST logout，生产 cookie 与本地开发 cookie 严格分开。
-- [ ] **4. 实现权限修改并验证。** 用户管理事务使用与 bootstrap 协调的管理员集合 advisory lock；停用会话失效、增加 auth_version、写审计。Origin 精确匹配公开 origin；CSRF 对浏览器写操作生效，OAuth callback/Webhook 使用各自认证。增加 `assert csrf_missing.status_code == 403`，重复第 2 步并核对 cookie 属性、站外 return_path 拒绝及安全错误体；Webhook 的端到端认证断言由任务 6 负责。
-- [ ] **5. 提交。** `feat: add github login sessions and member administration`。
+- [x] **1. 写失败测试。** `test_oauth_state_is_single_use_and_browser_bound`: 错误浏览器/重复回调无 session，10 分钟边界失效；`test_login_requires_allowlist`: 未允许的 GitHub ID 无 session。`test_session_expires_and_logout_invalidates`: 第 8 小时与注销后返回 401；`test_last_admin_concurrent_changes`: 两个连接并发降级/停用后 `assert active_admin_count >= 1`。`test_member_disabled_while_login_inflight`: 回调不能重新启用被停用成员。
+- [x] **2. 验证失败。** `uv --directory backend run pytest tests/test_csrf.py tests/integration/test_auth.py tests/integration/test_sessions.py tests/integration/test_members.py -q`。允许名单、PKCE、clock 边界用确定输入，数据库并发用屏障，不用长 sleep。
+- [x] **3. 实现登录与会话。** 一次性 state、浏览器 nonce、短期加密 PKCE verifier；用原子消费阻止双回调，身份核对使用 GitHub ID。生成 32 字节随机 session token，数据库存 SHA-256；会话 CSRF 使用独立 `APP_SIGNING_KEY` 的标准 HMAC，按用途区分，不复用凭据加密密钥。加入 GET session、POST logout，生产 cookie 与本地开发 cookie 严格分开。
+- [x] **4. 实现权限修改并验证。** 用户管理事务使用与 bootstrap 协调的管理员集合 advisory lock；停用会话失效、增加 auth_version、写审计。Origin 精确匹配公开 origin；CSRF 对浏览器写操作生效，OAuth callback/Webhook 使用各自认证。增加 `assert csrf_missing.status_code == 403`，重复第 2 步并核对 cookie 属性、站外 return_path 拒绝及安全错误体；Webhook 的端到端认证断言由任务 6 负责。
+- [x] **5. 提交。** `feat: add github login sessions and member administration`。
 
 ## Task 5: 仓库发现、接入和统一授权
 
@@ -205,11 +205,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 **Interfaces:** 前端 `api<T>(path: string, init?: RequestInit): Promise<T>` 自动携带同源 cookie，写请求加入 CSRF，传递 AbortSignal；`useSession()` 返回后端 session DTO，登出取消在途查询、清除全部 QueryClient 缓存并关闭事件连接。管理页面依赖 task 4 的用户接口和 `GET /api/v1/admin/audit-logs`；审计分页使用共同 `Page<AuditView>`，AuditView 为 task 2 AuditEntry 加 id 与 created_at。
 
-- [ ] **1. 建立前端工具链并写失败测试。** 使用 Node 24 LTS 的选定补丁版；安装稳定兼容 Next.js/React、Tailwind 4、TanStack Query 5、TypeScript、ESLint 与 Playwright，提交 lockfile。定义 `typecheck`、`lint`、`build`、`test:e2e` npm 脚本。`session.spec.ts`: 未登录仅看到登录入口、登录后显示当前用户、登出后 `expect(private_cached_text).not.toBeVisible()`；`admin.spec.ts`: member 不显示管理入口且直达被拒绝、最后管理员操作错误有明确提示。
-- [ ] **2. 验证失败。** `npm --prefix frontend run test:e2e -- tests/session.spec.ts tests/admin.spec.ts`；首次执行先安装锁定版本匹配的 Playwright Chromium。API 使用浏览器 route fixtures；这些测试不宣称真实 GitHub 登录已验证。
-- [ ] **3. 实现页面与审计 API。** 本阶段使用清晰的功能界面：固定导航、表格、空态与状态消息，中文文案，支持键盘与窄屏；不做未确认的品牌视觉重设计。GET session 不缓存跨用户私有数据；服务端页面不做公共静态预渲染私有响应。用户/审计列表分页，审计仅管理员可读，失败 reason 使用安全枚举。
-- [ ] **4. 验证边界与构建。** 后端 `uv --directory backend run pytest tests/integration/test_audit_visibility.py -q`，断言普通用户 403、admin 仅见脱敏数据。重复第 2 步并运行 `npm --prefix frontend run typecheck`、`npm --prefix frontend run lint`、`npm --prefix frontend run build`，均应成功。开发代理仅将 `/api` 转到固定 loopback FastAPI，生产走同源 HTTPS 入口。
-- [ ] **5. 提交。** `feat: add authenticated frontend and team administration`。
+- [x] **1. 建立前端工具链并写失败测试。** 使用 Node 24 LTS 的选定补丁版；安装稳定兼容 Next.js/React、Tailwind 4、TanStack Query 5、TypeScript、ESLint 与 Playwright，提交 lockfile。定义 `typecheck`、`lint`、`build`、`test:e2e` npm 脚本。`session.spec.ts`: 未登录仅看到登录入口、登录后显示当前用户、登出后 `expect(private_cached_text).not.toBeVisible()`；`admin.spec.ts`: member 不显示管理入口且直达被拒绝、最后管理员操作错误有明确提示。
+- [x] **2. 验证失败。** `npm --prefix frontend run test:e2e -- tests/session.spec.ts tests/admin.spec.ts`；首次执行先安装锁定版本匹配的 Playwright Chromium。API 使用浏览器 route fixtures；这些测试不宣称真实 GitHub 登录已验证。
+- [x] **3. 实现页面与审计 API。** 本阶段使用清晰的功能界面：固定导航、表格、空态与状态消息，中文文案，支持键盘与窄屏；不做未确认的品牌视觉重设计。GET session 不缓存跨用户私有数据；服务端页面不做公共静态预渲染私有响应。用户/审计列表分页，审计仅管理员可读，失败 reason 使用安全枚举。
+- [x] **4. 验证边界与构建。** 后端 `uv --directory backend run pytest tests/integration/test_audit_visibility.py -q`，断言普通用户 403、admin 仅见脱敏数据。重复第 2 步并运行 `npm --prefix frontend run typecheck`、`npm --prefix frontend run lint`、`npm --prefix frontend run build`，均应成功。开发代理仅将 `/api` 转到固定 loopback FastAPI，生产走同源 HTTPS 入口。
+- [x] **5. 提交。** `feat: add authenticated frontend and team administration`。
 
 ## Task 11: 仓库与检查页面
 
