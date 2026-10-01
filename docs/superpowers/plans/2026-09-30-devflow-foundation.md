@@ -169,11 +169,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 **Interfaces:** `JobStatus = Literal['queued','running','retry_wait','succeeded','failed']`；`ProbeResult(github_repository_id: int, full_name: str, private: bool, default_branch: str | None, checked_at: datetime)`；`JobView(id: UUID, repository_id: UUID, requested_by: UUID, status: JobStatus, attempt: int, max_attempts: int, result: ProbeResult | None, error_code: str | None, last_sequence: int)`，实际 JSON 还包括规格的创建/更新时间。`JobService.submit_probe(actor: Actor, repository_id: UUID, idempotency_key: str) -> JobView`、`.get_visible(actor: Actor, job_id: UUID) -> JobView`；`append_event(session: AsyncSession, job: Job, status: JobStatus, error_code: str | None = None) -> RunEvent` 不 commit。
 
-- [ ] **1. 写失败测试。** `test_concurrent_submission_idempotency`: 同用户/类型/key/输入并发提交只有一个 job，`assert first.id == second.id`；不同 repo 同 key 返回 409。`test_idempotency_does_not_bypass_reauthorization`: 权限撤销后重放同 key 也返回 404。`test_only_creator_can_read_job`: 同仓库另一用户或无仓库权限管理员读取返回 404。`test_state_event_audit_commit_together`: 注入事件或审计写入故障后 `assert created_jobs == created_events == created_audits == 0`。
-- [ ] **2. 验证失败。** `uv --directory backend run pytest tests/integration/test_job_submission.py tests/integration/test_job_visibility.py tests/integration/test_job_transactions.py -q`。
-- [ ] **3. 实现提交、模型与约束。** `Idempotency-Key` 必填、1–128 个可见 ASCII 字符；input 固定为平台 repo UUID，使用确定的 JSON 序列化计算 input_hash。唯一约束覆盖 requested_by/kind/key；并发冲突后读取原记录、核对 hash 与权限。202 返回前提交事务，重复相同请求仍返回 202 和原作业。`jobs` 保存规格全部租约字段并增加 `last_sequence`；建立到期候选 `(status,available_at,created_at,id)` 与运行租约过期索引；JobView 不暴露租约持有者或内部 input_hash。
-- [ ] **4. 实现事件与验证。** 锁住作业行后递增 last_sequence，写 `RunEvent` 和 AuditLog。事件名统一 `job.status`，payload 只包含 `status`、`attempt`、`error_code`，结果通过 REST 获取。一期终态事件是 status 为 succeeded/failed 的事件，不另造第二套序号。所有新增测试通过，并检查先授权再读取既有幂等记录及结果的顺序。
-- [ ] **5. 提交。** `feat: persist idempotent repository check jobs and events`。
+- [x] **1. 写失败测试。** `test_concurrent_submission_idempotency`: 同用户/类型/key/输入并发提交只有一个 job，`assert first.id == second.id`；不同 repo 同 key 返回 409。`test_idempotency_does_not_bypass_reauthorization`: 权限撤销后重放同 key 也返回 404。`test_only_creator_can_read_job`: 同仓库另一用户或无仓库权限管理员读取返回 404。`test_state_event_audit_commit_together`: 注入事件或审计写入故障后 `assert created_jobs == created_events == created_audits == 0`。
+- [x] **2. 验证失败。** `uv --directory backend run pytest tests/integration/test_job_submission.py tests/integration/test_job_visibility.py tests/integration/test_job_transactions.py -q`。
+- [x] **3. 实现提交、模型与约束。** `Idempotency-Key` 必填、1–128 个可见 ASCII 字符；input 固定为平台 repo UUID，使用确定的 JSON 序列化计算 input_hash。唯一约束覆盖 requested_by/kind/key；并发冲突后读取原记录、核对 hash 与权限。202 返回前提交事务，重复相同请求仍返回 202 和原作业。`jobs` 保存规格全部租约字段并增加 `last_sequence`；建立到期候选 `(status,available_at,created_at,id)` 与运行租约过期索引；JobView 不暴露租约持有者或内部 input_hash。
+- [x] **4. 实现事件与验证。** 锁住作业行后递增 last_sequence，写 `RunEvent` 和 AuditLog。事件名统一 `job.status`，payload 只包含 `status`、`attempt`、`error_code`，结果通过 REST 获取。一期终态事件是 status 为 succeeded/failed 的事件，不另造第二套序号。所有新增测试通过，并检查先授权再读取既有幂等记录及结果的顺序。
+- [x] **5. 提交。** `feat: persist idempotent repository check jobs and events`。
 
 ## Task 8: Worker 租约、重试和只读执行
 
