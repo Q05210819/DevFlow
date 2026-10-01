@@ -1,60 +1,69 @@
 # DevFlow
 
-第一阶段平台基础正在实现中。已提供 FastAPI 存活/就绪检查、PostgreSQL 身份与审计基础；GitHub 登录功能将在后续任务接入。
+面向单团队的私有仓库检查工作台：GitHub 登录、成员允许列表、仓库发现与接入、持久化访问检查、独立 Worker、REST/SSE 进度、撤权和审计。第一阶段仅执行只读 `repository.access_probe`，不调用模型、不克隆代码、不修改 GitHub 内容。
+
+本地合成 GitHub 联调与真实 GitHub 验收分别记录。真实 App、私有仓库与外部域名尚未提供，真实接入和外部部署未执行；不能据离线测试认定整个平台全部验收完成。
+
+## 文档
+
+- [本地开发与固定依赖版本](docs/operations/local-development.md)
+- [GitHub App、回调和秘密配置](docs/operations/github-app-setup.md)
+- [Compose 部署与启动顺序](docs/operations/deployment.md)
+- [备份与独立数据库恢复](docs/operations/backup-restore.md)
+- [阶段验收记录与未执行项目](docs/operations/foundation-acceptance.md)
 
 ## 本地启动
 
-安装 [UV](https://docs.astral.sh/uv/) 并确保可用 Python 3.12.13。在仓库根目录执行：
+需要 UV、Python 3.12.13、Node 24.21.0 和 PostgreSQL 17.11。以下命令从仓库根目录执行；Windows 使用 `npm.cmd`，Linux 使用 `npm`。
 
 ```powershell
 Copy-Item .env.example .env
 uv --directory backend sync --locked
-uv --directory backend run --env-file ../.env uvicorn devflow.app:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log --loop asyncio:SelectorEventLoop
+npm.cmd --prefix frontend ci
+uv --directory backend run --env-file ../.env --no-sync uvicorn devflow.app:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log --loop asyncio:SelectorEventLoop
 ```
 
-访问 `http://127.0.0.1:8000/health/live`，应返回 `{"status":"ok"}`。该接口不连接数据库或 GitHub。每个响应带独立的 `X-Request-ID`，错误响应用同一个 ID。其余 API 将统一位于 `/api/v1`。
+另一个终端运行 `npm.cmd --prefix frontend run dev -- --hostname 127.0.0.1 --port 3000`。访问 `http://127.0.0.1:3000`；开发服务器把 `/api/*` 代理到本机 8000。`PUBLIC_BASE_URL` 必须与浏览器实际 origin 完全一致。`/health/live` 不依赖数据库；`/health/ready` 在数据库不可达或迁移不匹配时返回 503。
 
-`/health/ready` 通过实际数据库连接检查迁移 head，未配置、连接失败或迁移不匹配返回 503。启动不会迁移或引导管理员。配置 `.env` 中的 `DATABASE_URL`（`postgresql+psycopg://...`）后显式执行：
+完整登录需要按 GitHub App 文档设置数据库、App 身份、安装允许列表和五个秘密文件；没有真实 App 时不会绕过认证。配置好 `.env` 后显式迁移、首次引导，再在独立终端启动 Worker：
 
 ```powershell
-uv --directory backend run --env-file ../.env alembic upgrade head
-uv --directory backend run --env-file ../.env python -m devflow.bootstrap
+uv --directory backend run --env-file ../.env --no-sync alembic upgrade head
+uv --directory backend run --env-file ../.env --no-sync python -m devflow.bootstrap
+uv --directory backend run --env-file ../.env --no-sync python -m devflow.worker
 ```
 
-引导要求设置正整数 `BOOTSTRAP_ADMIN_GITHUB_ID`；仅用户表为空时创建管理员，之后不会覆盖成员角色或启用状态。Windows 的 Psycopg 异步连接要求 SelectorEventLoop，上面的 Uvicorn 命令、引导 CLI 和 Worker CLI 均已配置。
+API/Worker 不自动迁移。引导只在用户表为空时创建 `BOOTSTRAP_ADMIN_GITHUB_ID` 对应的管理员。保留 `--no-access-log`，避免 OAuth 查询参数进入访问日志；Windows 数据库异步入口使用 SelectorEventLoop。秘密只放未跟踪的本机文件或运行时挂载文件，不提交到仓库。
 
-数据库迁移完成并配置 GitHub App 与凭据加密秘密后，在另一个终端启动独立 Worker：
+Worker 也可通过包入口 `uv --directory backend run --env-file ../.env devflow-worker` 启动，不依赖 API 进程存活。默认并发 4、尝试超时 120 秒、租约 30 秒、心跳 10 秒；最多尝试 3 次，退避 10/30 秒并遵守 GitHub 限流截止。`JOB_MAX_ATTEMPTS` 可设为 1–3，提交时持久化。
 
-```powershell
-uv --directory backend run --env-file ../.env python -m devflow.worker
-```
+Ctrl+C 或 Linux SIGTERM 停止领取，最多等待 30 秒后取消未完成处理；存活或重启后的 Worker 按数据库租约回收，旧 owner/generation 无法写回。结构化日志记录领取、心跳、失败与回收计数，不包含仓库元数据、令牌或原始上游错误。
 
-也可使用包入口 `uv --directory backend run --env-file ../.env devflow-worker`。Worker 不依赖 API 进程存活，只执行 `repository.access_probe` 的 GitHub 用户授权元数据读取。`WORKER_CONCURRENCY` 默认 4；每次尝试默认最多 120 秒，租约 30 秒，每 10 秒独立续期。最多尝试 3 次（`JOB_MAX_ATTEMPTS` 可设为 1–3，提交时持久化），重试默认等待 10/30 秒，并遵守 GitHub 限流截止。
+## 测试
 
-停止时按 Ctrl+C，Linux 也支持 SIGTERM：停止领取后最多等待 30 秒，再取消剩余处理，未完成租约由存活或重启后的 Worker 回收。强杀后同样依靠数据库租约回收；恢复仍消耗既定尝试预算，旧 owner/generation 无法写回。结构化日志提供领取等待、心跳、失败与回收计数，不包含仓库元数据、令牌或原始上游错误。
-
-运行测试和静态检查：
+先确认专用测试端口 `127.0.0.1:55439` 的归属，再启动测试 PostgreSQL；不操作其他项目容器或业务数据库。
 
 ```powershell
 docker compose -p devflow-test -f infra/compose.test.yaml up -d --wait postgres
-uv --directory backend run pytest -q
 uv --directory backend run ruff check .
 uv --directory backend run ruff format --check .
+uv --directory backend run pytest -m "not live_github" -q
+npm.cmd --prefix frontend run typecheck
+npm.cmd --prefix frontend run lint
+npm.cmd --prefix frontend run build
+Push-Location frontend
+npx.cmd --no-install playwright install chromium
+npm.cmd run test:e2e
+Pop-Location
 ```
 
-测试 PostgreSQL 固定为 17.11（镜像包含 digest），只暴露 `127.0.0.1:55439`；启动前确保该端口闲置。默认测试连接为 `postgresql+psycopg://devflow_test:devflow_test@127.0.0.1:55439/devflow_test`。`TEST_DATABASE_URL` 仅允许相同 loopback、端口、库名和用户，拒绝额外连接参数；不会使用应用 `DATABASE_URL`。每项数据库测试创建随机 schema 并仅清理自身 schema。不要将此测试库用于业务数据。
+后端和真实浏览器联调只使用 `devflow_test` 数据库/用户及随机独立 schema，结束后清理自身 schema。`TEST_DATABASE_URL` 仅允许上述专用 loopback 数据库，不能指定生产库。全量 Playwright 包含页面交互测试和 `full-flow.spec.ts`：后者启动真实 API、独立 Worker 任务与 PostgreSQL，仅替换 GitHub HTTP transport；OAuth state/cookie、会话、权限及作业持久化均使用生产实现。浏览器服务使用 31847/31848 两个本地端口，不需要真实 GitHub 秘密。
 
-在独立测试库检查命令行迁移（PowerShell）：
+仅运行跨模块验收：
 
 ```powershell
-$env:DATABASE_URL = 'postgresql+psycopg://devflow_test:devflow_test@127.0.0.1:55439/devflow_test'
-uv --directory backend run alembic upgrade head
-uv --directory backend run alembic check
-Remove-Item Env:DATABASE_URL
+uv --directory backend run pytest tests/integration/test_full_flow.py -q
+npm.cmd --prefix frontend run test:e2e -- tests/full-flow.spec.ts
 ```
 
-停用测试服务使用 `docker compose -p devflow-test -f infra/compose.test.yaml stop`；仅影响该独立项目并保留测试卷。UV 缓存受权限限制时可加 `--cache-dir .cache/uv`，不更改全局配置。
-
-本地没有 GitHub App 时保留 `.env.example` 中的 GitHub 配置注释即可。后续接入时，先创建 GitHub App 并获得 App ID、Client ID、允许的安装 ID 与引导管理员 GitHub ID，再将五项秘密写入独立文件，设置对应的 `*_FILE` 路径。`GITHUB_ALLOWED_INSTALLATION_IDS` 是 JSON 整数数组，例如 `[123456]`。生产环境必须使用 HTTPS 的 `PUBLIC_BASE_URL`，配置数据库、上述身份值及非空秘密文件；开发和测试环境的 HTTP URL 只允许 loopback 主机。
-
-敏感配置应放在未跟踪的 `.env` 或部署秘密文件中。日志只记录固定字段，不记录请求查询、Cookie、Authorization 或设置对象。UV 锁文件、解释器版本文件和 `.env.example` 已纳入版本管理。
+停止测试数据库使用 `docker compose -p devflow-test -f infra/compose.test.yaml stop`，保留测试卷。UV 缓存受限时可使用仓库内 `.cache/uv`；浏览器缓存可通过 `PLAYWRIGHT_BROWSERS_PATH` 指定本机目录。

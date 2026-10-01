@@ -8,6 +8,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import InterfaceError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from devflow.audit.routes import router as audit_router
@@ -150,6 +151,15 @@ def create_app(
     @app.exception_handler(AppError)
     async def app_error(request: Request, error: AppError):
         return _error_response(request, error.code, error.status, error.message)
+
+    @app.exception_handler(OperationalError)
+    @app.exception_handler(InterfaceError)
+    async def database_unavailable(request: Request, _error: Exception):
+        # Authentication dependencies run before route-local error handling.
+        # Connection failures are recoverable; SQL/programming errors stay 500.
+        return _error_response(
+            request, "service_unavailable", 503, "Service unavailable"
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _error: RequestValidationError):

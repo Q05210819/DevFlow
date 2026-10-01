@@ -6,6 +6,7 @@ export default defineConfig({
   testDir: "./tests",
   use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${port}` },
   webServer: {
+    env: { DEVFLOW_API_ORIGIN: "http://127.0.0.1:31848" },
     command: `${process.platform === "win32" ? "npm.cmd" : "npm"} run dev -- --hostname 127.0.0.1 --port ${port}`,
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: false,

@@ -1,6 +1,34 @@
 import { expect, test } from "@playwright/test";
 import { completed, job, session } from "./repository-fixtures";
 
+test("native access_lost clears private details even when REST recovery is unavailable", async ({ page }) => {
+  await session(page);
+  let revoked = false;
+  let recoveryReads = 0;
+  let releaseStream: () => void = () => {};
+  const release = new Promise<void>(resolve => { releaseStream = resolve; });
+  await page.route(`**/api/v1/jobs/${job.id}`, route => {
+    if (revoked) recoveryReads++;
+    return route.fulfill(revoked
+      ? { status: 503, json: { error: { code: "service_unavailable" } } }
+      : { json: job });
+  });
+  await page.route(`**/api/v1/jobs/${job.id}/events?**`, async route => {
+    await release;
+    await route.fulfill({ contentType: "text/event-stream", body: "event: access_lost\ndata: {}\n\n" });
+  });
+  try {
+    await page.goto(`/jobs/${job.id}`);
+    await expect(page.getByText(job.id, { exact: true })).toBeVisible();
+    revoked = true;
+    releaseStream();
+    await expect(page.getByRole("heading", { name: "检查不可访问" })).toBeVisible();
+    await expect(page.getByText(job.id, { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "检查详情" })).toHaveCount(0);
+    expect(recoveryReads).toBe(0);
+  } finally { releaseStream(); }
+});
+
 test("native EventSource replays duplicates, recovers with after and loads final result from REST", async ({ page }) => {
   await session(page);
   let finished = false;
