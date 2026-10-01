@@ -17,7 +17,8 @@ from support.auth_app import auth_env as auth_env  # noqa: PLC0414
 from support.auth_app import login, member
 
 from devflow.audit.models import AuditLog
-from devflow.auth.models import Session, User
+from devflow.auth.models import OAuthState, Session, User
+from devflow.auth.types import Actor
 from devflow.errors import AppError
 from devflow.github.models import GitHubCredential
 
@@ -395,6 +396,84 @@ async def test_unknown_user_revocation_does_not_create_member_or_allow_old_login
             "code", state, start.browser_nonce.get_secret_value()
         )
     assert caught.value.status == 403
+
+
+async def test_unknown_user_revocation_waits_for_uncommitted_member_creation(auth_env):
+    admin = await member(auth_env, github_id=202, role="admin")
+    actor = Actor(admin.id, admin.github_id, "admin", admin.auth_version)
+    gate = uuid4().int % (2**62)
+    async with auth_env.factory.begin() as db:
+        # create_member has inserted its User (and allocated the auth order)
+        # before writing this required audit. Pause the real transaction here.
+        await db.execute(
+            text(
+                "CREATE FUNCTION hold_member_creation() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                "BEGIN IF NEW.action = 'member.created' THEN PERFORM pg_advisory_xact_lock("
+                + str(gate)
+                + "); END IF; RETURN NEW; END $$"
+            )
+        )
+        await db.execute(
+            text(
+                "CREATE TRIGGER hold_member_creation BEFORE INSERT ON audit_logs "
+                "FOR EACH ROW EXECUTE FUNCTION hold_member_creation()"
+            )
+        )
+    async with auth_env.factory.begin() as blocker:
+        blocker_pid = await blocker.scalar(select(func.pg_backend_pid()))
+        await blocker.execute(select(func.pg_advisory_xact_lock(gate)))
+        creating = asyncio.create_task(auth_env.service.create_member(actor, 101))
+        async with asyncio.timeout(5), auth_env.factory() as observer:
+            while not (
+                creator_pid := await observer.scalar(
+                    text(
+                        "SELECT pid FROM pg_locks WHERE NOT granted "
+                        "AND :blocker = ANY(pg_blocking_pids(pid)) LIMIT 1"
+                    ),
+                    {"blocker": blocker_pid},
+                )
+            ):
+                if creating.done():
+                    await creating
+                    pytest.fail("Member creation bypassed the test's commit gate")
+                await asyncio.sleep(0)
+            assert (
+                await observer.scalar(select(User).where(User.github_id == 101)) is None
+            )
+        start = await auth_env.service.begin_login("/repositories")
+        state = parse_qs(urlsplit(start.authorize_url).query)["state"][0]
+        revoking = asyncio.create_task(
+            deliver(auth_env.factory, user_revoked(), "github_app_authorization")
+        )
+        revocation_waited = False
+        async with asyncio.timeout(5), auth_env.factory() as observer:
+            while not revoking.done():
+                revocation_waited = await observer.scalar(
+                    text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted "
+                        "AND :creator = ANY(pg_blocking_pids(pid)))"
+                    ),
+                    {"creator": creator_pid},
+                )
+                if revocation_waited:
+                    break
+                await asyncio.sleep(0)
+    # Releasing the gate lets member creation commit, then the webhook must
+    # discover and revoke that row before acknowledging its delivery.
+    created = await creating
+    await revoking
+    with pytest.raises(AppError) as caught:
+        await auth_env.service.complete_login(
+            "code", state, start.browser_nonce.get_secret_value()
+        )
+    assert caught.value.status == 403
+    assert revocation_waited
+    async with auth_env.factory() as db:
+        user = await db.get(User, created.id)
+        started = await db.scalar(select(OAuthState.started_order))
+        assert user.auth_version == 2 and user.auth_changed_order > started
+        assert await db.scalar(select(func.count()).select_from(Session)) == 0
+        assert await db.scalar(select(func.count()).select_from(GitHubCredential)) == 0
 
 
 async def test_user_revocation_cannot_be_undone_by_late_refresh(auth_env):

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from devflow.audit.service import AuditEntry, write_audit
 from devflow.auth.models import AUTH_ORDER_SEQUENCE, Session, User
+from devflow.db import lock_admin_set
 from devflow.errors import AppError
 from devflow.github.models import GitHubCredential, GitHubInstallation, WebhookDelivery
 from devflow.repositories.models import Repository
@@ -206,6 +207,9 @@ class WebhookService:
             )
 
     async def _user(self, db: AsyncSession, github_user_id: int) -> None:
+        # A row lock cannot see an uncommitted member insertion. Serialize with
+        # create_member/bootstrap before deciding this identity is unknown.
+        await lock_admin_set(db)
         # Credential refresh and OAuth callback share this lock order. A refresh
         # already in flight finishes first; this transaction then clears its pair.
         user = await db.scalar(
