@@ -70,7 +70,7 @@ def create_app(
             )
             app.state.auth_service = (
                 AuthService(factory, app.state.github, cipher, configured)
-                if factory is not None
+                if factory is not None and cipher is not None
                 else None
             )
             yield
