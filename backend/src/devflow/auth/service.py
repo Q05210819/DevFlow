@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from devflow.audit.models import AuditLog
 from devflow.audit.service import AuditEntry, ReasonCode, write_audit
-from devflow.auth.models import OAuthState, Session, User
+from devflow.auth.models import AUTH_ORDER_SEQUENCE, OAuthState, Session, User
 from devflow.auth.schemas import AuditView, LoginStart, SessionIssue, UserView
 from devflow.auth.types import Actor, Role
 from devflow.config import Settings
@@ -204,7 +204,7 @@ class AuthService:
                 rejection = "member_not_allowed"
             elif not user.enabled:
                 rejection = "member_disabled"
-            elif saved.created_at <= user.auth_changed_at:
+            elif saved.started_order <= user.auth_changed_order:
                 rejection = "permission_revoked"
             if rejection:
                 await write_audit(
@@ -411,6 +411,7 @@ class AuthService:
                     user.auth_changed_at = await db.scalar(
                         select(func.clock_timestamp())
                     )
+                    user.auth_changed_order = AUTH_ORDER_SEQUENCE.next_value()
                     await db.execute(delete(Session).where(Session.user_id == user.id))
                     if not user.enabled:
                         credential = await db.scalar(

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from devflow.audit.service import AuditEntry, write_audit
-from devflow.auth.models import User
+from devflow.auth.models import AUTH_ORDER_SEQUENCE, User
 from devflow.auth.types import Actor
 from devflow.errors import AppError
 from devflow.github.client import GitHubClient, reauthorize
@@ -65,6 +65,7 @@ class CredentialService:
         credential.version += 1
         user.auth_version += 1
         user.auth_changed_at = func.clock_timestamp()
+        user.auth_changed_order = AUTH_ORDER_SEQUENCE.next_value()
         await write_audit(
             session,
             AuditEntry(

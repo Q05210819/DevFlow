@@ -7,10 +7,10 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from sqlalchemy import func, select, update
 from support.auth_app import auth_env as auth_env  # noqa: PLC0414
-from support.auth_app import browser, member
+from support.auth_app import browser, login, member
 
 from devflow.audit.models import AuditLog
-from devflow.auth.models import OAuthState, Session, User
+from devflow.auth.models import AUTH_ORDER_SEQUENCE, OAuthState, Session, User
 from devflow.errors import AppError
 from devflow.github.models import GitHubCredential
 
@@ -232,6 +232,7 @@ async def test_login_respects_revoke_committed_while_waiting_for_user_lock(auth_
                     await asyncio.sleep(0)
             row.auth_version += 1
             row.auth_changed_at = await revoker.scalar(select(func.clock_timestamp()))
+            row.auth_changed_order = AUTH_ORDER_SEQUENCE.next_value()
         with pytest.raises(AppError) as error:
             await callback
         assert error.value.status == 403
@@ -244,6 +245,47 @@ async def test_login_respects_revoke_committed_while_waiting_for_user_lock(auth_
         if callback and not callback.done():
             callback.cancel()
             await asyncio.gather(callback, return_exceptions=True)
+
+
+async def test_clock_rollback_does_not_reject_state_started_after_member_exists(
+    auth_env,
+):
+    target = await member(auth_env)
+    async with auth_env.factory.begin() as db:
+        await db.execute(
+            update(User)
+            .where(User.id == target.id)
+            .values(auth_changed_at=func.clock_timestamp() + timedelta(days=1))
+        )
+    begun, state = await start(auth_env)
+    issue = await auth_env.service.complete_login(
+        "code", state, begun.browser_nonce.get_secret_value()
+    )
+    assert (
+        await auth_env.service.resolve_session(issue.raw_token.get_secret_value())
+    ).id == target.id
+
+
+async def test_clock_rollback_does_not_accept_state_started_before_revoke(auth_env):
+    await member(auth_env, role="admin")
+    target = await member(auth_env, github_id=102, role="admin")
+    actor = await auth_env.service.resolve_session(
+        (await login(auth_env)).raw_token.get_secret_value()
+    )
+    auth_env.github_id = 102
+    begun, state = await start(auth_env)
+    await auth_env.service.update_member(actor, target.id, role="member", enabled=None)
+    async with auth_env.factory.begin() as db:
+        await db.execute(
+            update(User)
+            .where(User.id == target.id)
+            .values(auth_changed_at=func.clock_timestamp() - timedelta(days=1))
+        )
+    with pytest.raises(AppError) as error:
+        await auth_env.service.complete_login(
+            "code", state, begun.browser_nonce.get_secret_value()
+        )
+    assert error.value.status == 403
 
 
 @pytest.mark.parametrize(

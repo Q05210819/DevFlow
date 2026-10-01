@@ -125,7 +125,9 @@ async def test_role_change_immediately_invalidates_sessions_and_stale_actor(auth
         )
     async with auth_env.factory() as db:
         row = await db.get(User, target.id)
-        assert row.auth_version == 2 and row.auth_changed_at > target.auth_changed_at
+        assert (
+            row.auth_version == 2 and row.auth_changed_order > target.auth_changed_order
+        )
 
 
 async def test_member_routes_allowlist_conflict_pagination_and_audit(auth_env):
@@ -252,7 +254,7 @@ async def test_disabling_member_clears_credentials_and_all_sessions(auth_env):
         assert credential.needs_reauth and credential.version == 3
         user = await db.get(User, target.id)
         assert not user.enabled and user.auth_version == 2
-        assert user.auth_changed_at > target.auth_changed_at
+        assert user.auth_changed_order > target.auth_changed_order
 
 
 async def test_member_change_rolls_back_when_audit_write_fails(auth_env):
@@ -291,6 +293,7 @@ async def test_member_change_rolls_back_when_audit_write_fails(auth_env):
             user.enabled
             and user.auth_version == 1
             and user.auth_changed_at == target.auth_changed_at
+            and user.auth_changed_order == target.auth_changed_order
         )
         assert credential.version == 1 and not credential.needs_reauth
         assert (

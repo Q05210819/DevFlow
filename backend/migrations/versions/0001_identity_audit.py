@@ -10,6 +10,9 @@ depends_on = None
 
 
 def upgrade():
+    op.execute(
+        "CREATE SEQUENCE auth_change_order_seq AS bigint INCREMENT BY 1 MINVALUE 1 CACHE 1 NO CYCLE"
+    )
     op.create_table(
         "users",
         sa.Column("id", sa.Uuid(), primary_key=True),
@@ -26,6 +29,12 @@ def upgrade():
             sa.DateTime(timezone=True),
             nullable=False,
             server_default=sa.func.clock_timestamp(),
+        ),
+        sa.Column(
+            "auth_changed_order",
+            sa.BigInteger(),
+            nullable=False,
+            server_default=sa.text("nextval('auth_change_order_seq'::regclass)"),
         ),
         sa.Column(
             "created_at",
@@ -53,6 +62,12 @@ def upgrade():
         sa.Column("return_path", sa.Text(), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("consumed_at", sa.DateTime(timezone=True)),
+        sa.Column(
+            "started_order",
+            sa.BigInteger(),
+            nullable=False,
+            server_default=sa.text("nextval('auth_change_order_seq'::regclass)"),
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -152,3 +167,4 @@ def downgrade():
         "users",
     ):
         op.drop_table(table)
+    op.execute("DROP SEQUENCE auth_change_order_seq")

@@ -10,7 +10,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from devflow.audit.models import AuditLog
-from devflow.auth.models import User
+from devflow.auth.models import AUTH_ORDER_SEQUENCE, User
 from devflow.auth.types import Actor
 from devflow.db import create_session_factory
 from devflow.errors import AppError
@@ -242,7 +242,7 @@ async def test_refresh_failure_classification(
         assert row.expires_at is row.refresh_expires_at is None
         assert (
             user.auth_version == 2
-            and user.auth_changed_at > original_user.auth_changed_at
+            and user.auth_changed_order > original_user.auth_changed_order
         )
         assert user.enabled
         assert len(audits) == 1
@@ -342,6 +342,7 @@ async def test_late_401_does_not_clear_new_pair_or_new_authorization(
             user = await session.scalar(select(User).with_for_update())
             user.auth_version += 1
             user.auth_changed_at = func.clock_timestamp()
+            user.auth_changed_order = AUTH_ORDER_SEQUENCE.next_value()
         assert not await service.invalidate_user_token(actor, current)
         assert (await snapshot(db_factory))[0].version == 2
 
@@ -390,6 +391,7 @@ async def test_revocation_committed_while_refresh_waits_is_not_restored(
                 elif change == "new_auth":
                     user.auth_version += 1
                     user.auth_changed_at = func.clock_timestamp()
+                    user.auth_changed_order = AUTH_ORDER_SEQUENCE.next_value()
                 else:
                     row.needs_reauth = True
                     row.access_token_encrypted = row.refresh_token_encrypted = None
@@ -504,6 +506,7 @@ async def test_late_refresh_cannot_restore_concurrent_revocation(
             user.enabled = False
             user.auth_version += 1
             user.auth_changed_at = func.clock_timestamp()
+            user.auth_changed_order = AUTH_ORDER_SEQUENCE.next_value()
             row.access_token_encrypted = row.refresh_token_encrypted = None
             row.needs_reauth = True
             row.version += 1

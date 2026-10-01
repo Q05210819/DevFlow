@@ -10,6 +10,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from devflow.audit.routes import router as audit_router
+from devflow.auth.admin import router as admin_router
+from devflow.auth.routes import router as auth_router
+from devflow.auth.service import AuthService
 from devflow.config import Settings
 from devflow.db import create_session_factory, schema_is_current
 from devflow.errors import AppError
@@ -64,6 +68,11 @@ def create_app(
                 if factory is not None and cipher is not None
                 else None
             )
+            app.state.auth_service = (
+                AuthService(factory, app.state.github, cipher, configured)
+                if factory is not None
+                else None
+            )
             yield
         finally:
             try:
@@ -75,6 +84,9 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan)
     app.state.settings = configured
+    app.include_router(auth_router)
+    app.include_router(admin_router)
+    app.include_router(audit_router)
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):

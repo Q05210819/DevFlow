@@ -10,19 +10,23 @@ from cryptography.fernet import Fernet
 
 
 @pytest_asyncio.fixture
-async def auth_env(db_factory, settings_factory, tmp_path):
-    from devflow.auth.service import AuthService
+async def auth_env(db_factory, migrated_database, tmp_path):
+    from devflow.app import create_app
     from devflow.github.client import GitHubClient
-    from devflow.security import CredentialCipher
 
     client_secret = tmp_path / "client-secret"
     client_secret.write_text("synthetic-client-secret")
     signing_key = tmp_path / "signing-key"
     signing_key.write_bytes(b"synthetic-signing-key-material-32bytes")
-    settings = settings_factory(
-        github_client_id="client-id",
-        github_client_secret_file=client_secret,
-        app_signing_key_file=signing_key,
+    cipher_key = tmp_path / "cipher-key"
+    cipher_key.write_bytes(Fernet.generate_key())
+    settings = migrated_database[0].model_copy(
+        update={
+            "github_client_id": "client-id",
+            "github_client_secret_file": client_secret,
+            "app_signing_key_file": signing_key,
+            "credential_encryption_key_file": cipher_key,
+        }
     )
     env = SimpleNamespace(
         factory=db_factory,
@@ -55,9 +59,11 @@ async def auth_env(db_factory, settings_factory, tmp_path):
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         env.github = GitHubClient(http, settings)
-        env.cipher = CredentialCipher(Fernet.generate_key())
-        env.service = AuthService(db_factory, env.github, env.cipher, settings)
-        yield env
+        env.app = create_app(settings, github=env.github)
+        async with env.app.router.lifespan_context(env.app):
+            env.cipher = env.app.state.cipher
+            env.service = env.app.state.auth_service
+            yield env
 
 
 async def member(env, github_id=101, role="member"):
@@ -81,19 +87,8 @@ async def login(env, return_path="/"):
 
 @asynccontextmanager
 async def browser(env):
-    from devflow.app import create_app
-    from devflow.audit.routes import router as audit_router
-    from devflow.auth.admin import router as admin_router
-    from devflow.auth.routes import router
-
-    app = create_app(env.settings)
-    app.include_router(router)
-    app.include_router(admin_router)
-    app.include_router(audit_router)
-    app.state.auth_service = env.service
-    app.state.session_factory = env.factory
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+        transport=httpx.ASGITransport(app=env.app),
         base_url=env.settings.public_base_url,
         follow_redirects=False,
     ) as client:

@@ -16,6 +16,8 @@ ERROR_CODES = frozenset(
         "attempt_timeout",
         "invalid_cursor",
         "service_unavailable",
+        "last_admin",
+        "internal_error",
     }
 )
 RETRYABLE_ERROR_CODES = frozenset(

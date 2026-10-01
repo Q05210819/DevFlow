@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     LargeBinary,
+    Sequence,
     String,
     Text,
     func,
@@ -17,6 +18,10 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from devflow.db import Base
+
+AUTH_ORDER_SEQUENCE = Sequence(
+    "auth_change_order_seq", metadata=Base.metadata, start=1, increment=1, cache=1
+)
 
 
 class User(Base):
@@ -34,10 +39,13 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16), server_default="member")
     enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     auth_version: Mapped[int] = mapped_column(Integer, server_default="1")
-    # Only authorization changes explicitly update this DB-clock cutoff.
-    # Anonymous OAuth state predating it cannot restore revoked credentials.
+    # Time remains useful for audit; the shared sequence establishes ordering
+    # even when the database wall clock moves backward.
     auth_changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp()
+    )
+    auth_changed_order: Mapped[int] = mapped_column(
+        BigInteger, server_default=AUTH_ORDER_SEQUENCE.next_value()
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -57,6 +65,9 @@ class OAuthState(Base):
     return_path: Mapped[str] = mapped_column(Text)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_order: Mapped[int] = mapped_column(
+        BigInteger, server_default=AUTH_ORDER_SEQUENCE.next_value()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

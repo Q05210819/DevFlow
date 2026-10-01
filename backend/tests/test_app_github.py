@@ -17,6 +17,17 @@ def test_app_missing_optional_github_keeps_health(settings_factory):
         assert client.get("/health/ready").status_code == 503
         assert isinstance(app.state.github, GitHubClient)
         assert app.state.cipher is None and app.state.credential_service is None
+        for path in (
+            "/api/v1/session",
+            "/api/v1/admin/users",
+            "/api/v1/admin/audit-logs",
+        ):
+            response = client.get(path)
+            assert response.status_code == 401
+            assert response.json()["error"]["code"] == "unauthenticated"
+        response = client.get("/api/v1/auth/github/start")
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "service_unavailable"
 
 
 def test_app_injects_dependencies_and_does_not_close_external_http(
