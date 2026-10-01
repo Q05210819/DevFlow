@@ -35,7 +35,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def request_context(request: Request, call_next):
         request.state.request_id = uuid4().hex
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        # Keep raw exception details out of the ASGI server's error log.
+        except Exception:  # noqa: BLE001
+            response = _error_response(
+                request, "internal_error", 500, "Internal server error"
+            )
         response.headers["X-Request-ID"] = request.state.request_id
         log_request(request.state.request_id, response.status_code)
         return response

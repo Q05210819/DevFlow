@@ -9,7 +9,7 @@
 ```powershell
 Copy-Item .env.example .env
 uv --directory backend sync --locked
-uv --directory backend run --env-file ../.env uvicorn devflow.app:create_app --factory --host 127.0.0.1 --port 8000
+uv --directory backend run --env-file ../.env uvicorn devflow.app:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
 访问 `http://127.0.0.1:8000/health/live`，应返回 `{"status":"ok"}`。该接口不连接数据库或 GitHub。每个响应带独立的 `X-Request-ID`，错误响应用同一个 ID。其余 API 将统一位于 `/api/v1`。
