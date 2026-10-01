@@ -19,11 +19,13 @@ from devflow.db import create_session_factory, schema_is_current
 from devflow.errors import AppError
 from devflow.github.client import GitHubClient
 from devflow.github.credentials import CredentialService
+from devflow.github.webhooks import WebhookService
+from devflow.github.webhooks import router as webhook_router
 from devflow.logging import configure_logging, log_request
 from devflow.repositories.policy import RepositoryPolicy
 from devflow.repositories.routes import router as repository_router
 from devflow.repositories.service import RepositoryService
-from devflow.security import CredentialCipher
+from devflow.security import CredentialCipher, read_secret_file
 
 
 def _error_response(
@@ -94,6 +96,14 @@ def create_app(
                 if factory is not None and cipher is not None
                 else None
             )
+            app.state.webhook_service = (
+                WebhookService(
+                    factory, read_secret_file(configured.github_webhook_secret_file)
+                )
+                if factory is not None
+                and configured.github_webhook_secret_file is not None
+                else None
+            )
             yield
         finally:
             try:
@@ -105,6 +115,7 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan)
     app.state.settings = configured
+    app.include_router(webhook_router)
     app.include_router(repository_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
