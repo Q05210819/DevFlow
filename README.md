@@ -21,7 +21,17 @@ uv --directory backend run --env-file ../.env alembic upgrade head
 uv --directory backend run --env-file ../.env python -m devflow.bootstrap
 ```
 
-引导要求设置正整数 `BOOTSTRAP_ADMIN_GITHUB_ID`；仅用户表为空时创建管理员，之后不会覆盖成员角色或启用状态。Windows 的 Psycopg 异步连接要求 SelectorEventLoop，上面的 Uvicorn 命令与引导 CLI 均已配置；后续 Worker 入口也应采用同一事件循环。
+引导要求设置正整数 `BOOTSTRAP_ADMIN_GITHUB_ID`；仅用户表为空时创建管理员，之后不会覆盖成员角色或启用状态。Windows 的 Psycopg 异步连接要求 SelectorEventLoop，上面的 Uvicorn 命令、引导 CLI 和 Worker CLI 均已配置。
+
+数据库迁移完成并配置 GitHub App 与凭据加密秘密后，在另一个终端启动独立 Worker：
+
+```powershell
+uv --directory backend run --env-file ../.env python -m devflow.worker
+```
+
+也可使用包入口 `uv --directory backend run --env-file ../.env devflow-worker`。Worker 不依赖 API 进程存活，只执行 `repository.access_probe` 的 GitHub 用户授权元数据读取。`WORKER_CONCURRENCY` 默认 4；每次尝试默认最多 120 秒，租约 30 秒，每 10 秒独立续期。最多尝试 3 次（`JOB_MAX_ATTEMPTS` 可设为 1–3，提交时持久化），重试默认等待 10/30 秒，并遵守 GitHub 限流截止。
+
+停止时按 Ctrl+C，Linux 也支持 SIGTERM：停止领取后最多等待 30 秒，再取消剩余处理，未完成租约由存活或重启后的 Worker 回收。强杀后同样依靠数据库租约回收；恢复仍消耗既定尝试预算，旧 owner/generation 无法写回。结构化日志提供领取等待、心跳、失败与回收计数，不包含仓库元数据、令牌或原始上游错误。
 
 运行测试和静态检查：
 

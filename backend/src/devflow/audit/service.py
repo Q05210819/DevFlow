@@ -19,6 +19,7 @@ AuditAction = Literal[
     "webhook.processed",
     "credential.revoked",
     "job.submitted",
+    "job.started",
     "job.retried",
     "job.succeeded",
     "job.failed",
