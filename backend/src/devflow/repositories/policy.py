@@ -259,7 +259,12 @@ class RepositoryPolicy:
             return RepositoryView.model_validate(repository), key
 
     async def require(
-        self, actor: Actor, repository_id: UUID, *, fresh: bool = False
+        self,
+        actor: Actor,
+        repository_id: UUID,
+        *,
+        fresh: bool = False,
+        audit: bool = True,
     ) -> RepositoryView:
         try:
             return await self._require(actor, repository_id, fresh=fresh)
@@ -269,7 +274,10 @@ class RepositoryPolicy:
                 for key, deadline in self._cache.items()
                 if key[:2] != (actor.id, repository_id)
             }
-            await self.audit_denial(actor, error, repository_id)
+            # Workers defer this audit to their lease-fenced failure transaction.
+            # API callers retain the default immediate denial audit.
+            if audit:
+                await self.audit_denial(actor, error, repository_id)
             raise
 
     async def audit_denial(

@@ -12,6 +12,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from devflow.audit.service import AuditEntry, write_audit
+from devflow.auth.models import User
 from devflow.jobs.models import Job
 from devflow.jobs.schemas import JobErrorCode, ProbeResult
 from devflow.jobs.service import append_event
@@ -137,10 +138,37 @@ class Queue:
         except ValidationError:
             code, retryable = "internal_error", False
         async with self._transaction() as session:
+            denial = code in {"resource_not_found", "permission_revoked"}
+            if denial:
+                # Read the immutable creator without taking Job's lock, then
+                # acquire the actor FK lock in the established User → Job order.
+                creator = await session.scalar(
+                    select(Job.requested_by).where(Job.id == lease.job_id)
+                )
+                if creator is None:
+                    return False
+                await session.execute(
+                    select(User.id)
+                    .where(User.id == creator)
+                    .with_for_update(read=True, key_share=True)
+                )
             job, now = await self._owned(session, lease)
             if job is None:
                 return False
             await self._failure(session, job, now, code, retryable, retry_at)
+            if denial:
+                await write_audit(
+                    session,
+                    AuditEntry(
+                        actor_id=job.requested_by,
+                        action="permission.denied",
+                        resource_type="repository",
+                        resource_id=job.repository_id,
+                        job_id=job.id,
+                        outcome="failure",
+                        reason_code=code,
+                    ),
+                )
         _metric("queue.failure", lease, error_code=code)
         return True
 
