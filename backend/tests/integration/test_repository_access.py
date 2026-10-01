@@ -546,3 +546,156 @@ async def test_late_denial_clears_concurrently_populated_success_cache(repo_env)
         if not pending.done():
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
+
+
+async def reader_actor(env):
+    from pydantic import SecretStr
+
+    from devflow.auth.models import User
+    from devflow.auth.types import Actor
+    from devflow.github.models import GitHubCredential
+
+    async with env.factory.begin() as session:
+        user = User(github_id=77, role="member")
+        session.add(user)
+        await session.flush()
+        session.add(
+            GitHubCredential(
+                user_id=user.id,
+                access_token_encrypted=env.cipher.encrypt(SecretStr("reader-token")),
+            )
+        )
+        return Actor(user.id, user.github_id, user.role, user.auth_version)
+
+
+@pytest.mark.asyncio
+async def test_fresh_require_returns_metadata_from_verified_provider_response(repo_env):
+    env = repo_env
+    registered = await env.service.register(env.actor, 11, 101)
+    env.repositories[(11, 1)] = ([repository(101, "team/renamed")], None)
+    view = await env.policy.require(env.actor, registered.id, fresh=True)
+    assert view.id == registered.id and view.full_name == "team/renamed"
+
+
+@pytest.mark.asyncio
+async def test_require_rejects_transfer_after_verified_transaction(
+    repo_env, monkeypatch
+):
+    env = repo_env
+    registered = await env.service.register(env.actor, 11, 101)
+    reader = await reader_actor(env)
+    reached, release = asyncio.Event(), asyncio.Event()
+    real_local = env.policy.local
+    reads = 0
+
+    async def pause_before_final_read(actor, repository_id):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            # The real verification transaction committed before this query.
+            reached.set()
+            await release.wait()
+        return await real_local(actor, repository_id)
+
+    monkeypatch.setattr(env.policy, "local", pause_before_final_read)
+    pending = asyncio.create_task(env.policy.require(reader, registered.id, fresh=True))
+    try:
+        await asyncio.wait_for(reached.wait(), 5)
+        env.installations = {1: ([installation(12)], None)}
+        env.repositories[(12, 1)] = ([repository(101, "other/private-transfer")], None)
+        moved = await env.service.register(env.actor, 12, 101)
+        assert moved.id == registered.id and moved.installation_id == 12
+        # The member's provider view excludes the destination installation.
+        env.installations = {1: ([installation(11)], None)}
+        release.set()
+        with pytest.raises(AppError) as error:
+            await pending
+        assert error.value.status == 404
+        with pytest.raises(AppError) as error:
+            await env.policy.require(reader, registered.id)
+        assert error.value.status == 404
+    finally:
+        release.set()
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["installation", "repository"])
+async def test_require_cannot_restore_state_changed_after_first_local_read(
+    repo_env, monkeypatch, target
+):
+    from devflow.audit.models import AuditLog
+    from devflow.github.models import GitHubInstallation
+    from devflow.repositories.models import Repository
+
+    env = repo_env
+    registered = await env.service.register(env.actor, 11, 101)
+    reader = await reader_actor(env)
+    reached, release = asyncio.Event(), asyncio.Event()
+    real_local = env.policy.local
+    first = True
+
+    async def pause_after_initial_read(actor, repository_id):
+        nonlocal first
+        result = await real_local(actor, repository_id)
+        if first:
+            first = False
+            reached.set()
+            await release.wait()
+        return result
+
+    monkeypatch.setattr(env.policy, "local", pause_after_initial_read)
+    pending = asyncio.create_task(env.policy.require(reader, registered.id, fresh=True))
+    try:
+        await asyncio.wait_for(reached.wait(), 5)
+        async with env.factory.begin() as session:
+            # Every scope event increments the installation epoch; revoke then
+            # restoration marker leave remote availability unpromoted.
+            await session.execute(
+                update(GitHubInstallation).values(
+                    auth_version=GitHubInstallation.auth_version + 2,
+                    **(
+                        {"available": False, "needs_verification": True}
+                        if target == "installation"
+                        else {}
+                    ),
+                )
+            )
+            if target == "repository":
+                await session.execute(
+                    update(Repository)
+                    .where(Repository.id == registered.id)
+                    .values(
+                        available=False,
+                        needs_verification=True,
+                        auth_version=Repository.auth_version + 2,
+                    )
+                )
+        release.set()
+        with pytest.raises(AppError) as error:
+            await pending
+        assert error.value.status == 404
+        async with env.factory() as session:
+            model = GitHubInstallation if target == "installation" else Repository
+            row = await session.scalar(select(model))
+            assert (
+                not row.available and row.needs_verification and row.auth_version == 3
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AuditLog)
+                    .where(AuditLog.action == "repository.registered")
+                )
+                == 1
+            )
+        with pytest.raises(AppError) as error:
+            await env.policy.require(reader, registered.id)
+        assert error.value.status == 404
+    finally:
+        release.set()
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)

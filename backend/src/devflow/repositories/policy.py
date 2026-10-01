@@ -305,17 +305,45 @@ class RepositoryPolicy:
             actor, view.installation_id, view.github_repository_id
         )
         async with self.factory.begin() as session:
-            _, installation, repository = await self.lock_verified(
+            user, installation, repository = await self.lock_verified(
                 session, actor, proof
             )
-            if repository is None or repository.id != repository_id:
+            if (
+                repository is None
+                or repository.id != repository_id
+                or not repository.available
+                or repository.needs_verification
+                or not installation.available
+                or installation.needs_verification
+            ):
                 raise not_found()
-            self.promote(installation, repository, proof)
-        view, key = await self.local(actor, repository_id)
+            verified_key = (
+                actor.id,
+                repository.id,
+                user.auth_version,
+                installation.auth_version,
+                repository.auth_version,
+                installation.installation_id,
+            )
+            if verified_key != key:
+                raise not_found()
+            # A read proves access to this exact snapshot. Only registration may
+            # promote lifecycle state or persist a changed repository binding.
+            verified_view = RepositoryView(
+                id=repository.id,
+                github_repository_id=proof.repository.id,
+                installation_id=proof.installation.id,
+                full_name=proof.repository.full_name,
+                private=proof.repository.private,
+                default_branch=proof.repository.default_branch,
+            )
+        _, current_key = await self.local(actor, repository_id)
+        if current_key != verified_key:
+            raise not_found()
         self._cache = {
             k: deadline for k, deadline in self._cache.items() if deadline > started
         }
         if len(self._cache) >= 1024:
             self._cache.pop(next(iter(self._cache)))
-        self._cache[key] = started + 60
-        return view
+        self._cache[verified_key] = started + 60
+        return verified_view
