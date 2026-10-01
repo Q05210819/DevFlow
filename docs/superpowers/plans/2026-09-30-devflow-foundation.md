@@ -181,11 +181,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 **Interfaces:** `Lease(job_id: UUID, owner: UUID, generation: int, attempt: int)`；`Queue(factory).claim(owner: UUID) -> Lease | None`、`.heartbeat(lease: Lease) -> bool`、`.complete(lease: Lease, result: ProbeResult) -> bool`、`.fail(lease: Lease, code: str, retryable: bool, retry_at: datetime | None = None) -> bool`、`.recover_expired() -> int` 均为 async。`run_probe(job_id: UUID, factory, policy, github, credentials) -> ProbeResult`；`run_worker(settings: Settings, *, stop: asyncio.Event, github: GitHubClient | None = None) -> None`，CLI 为 `uv run python -m devflow.worker`。
 
-- [ ] **1. 写失败测试。** `test_two_workers_claim_once`: 两连接同时领取，`assert len(valid_leases) == 1`；`test_stale_generation_cannot_complete`: 租约过期重新领取后 `assert await queue.complete(old_lease, result) is False`，事件与结果不变；`test_retry_budget_and_deadline`: attempt 依次 1/2/3，10/30 秒退避，第三次失败终态 failed；`test_probe_rechecks_creator_authorization`: 入队后撤权、执行前拒绝且不返回 metadata。
-- [ ] **2. 验证失败。** `uv --directory backend run pytest tests/integration/test_queue_leases.py tests/integration/test_worker_recovery.py tests/integration/test_probe_handler.py -q`。通过 SQL 设置过期租约与 available_at 构造边界；进程恢复测试用子进程/容器，不仅模拟函数返回。
-- [ ] **3. 实现租约状态机。** claim 使用有界短事务 `FOR UPDATE SKIP LOCKED`，领取 queued 或到期 retry_wait，增加 attempt/generation、写 running 事件/审计；网络请求在提交后执行。所有写回带 job ID、owner、generation、running 状态与有效租约条件。heartbeat 用独立 session，不能与处理器共享 AsyncSession。回收先使旧租约失效，再写 retry_wait 或最终 failed 及事件/审计。
-- [ ] **4. 实现 Worker 并验证恢复。** 并发 4、租约 30 秒、心跳 10 秒、每次执行 120 秒；失败重试时间取退避与 GitHub 限流截止的较晚者。租约丢失立即取消本地协程；优雅停止停止领取并有界等待，超出等待后让租约自然回收。CLI 同时处理 Linux 信号与 Windows KeyboardInterrupt。run_probe 重新读取创建者 enabled/auth_version、fresh 检查仓库，使用用户 token 获取安装仓库列表中的目标 ID 和 metadata；响应后再次检查本地授权是否已失效。强杀旧 Worker 后新 Worker 恢复，旧进程返回不能写回；退出后无需 API 存活。结构化日志记录心跳、队列等待与失败计数，不增加新的公开监控接口。
-- [ ] **5. 提交。** 定向测试全部通过，提交 `feat: execute recoverable repository checks with fenced leases`。
+- [x] **1. 写失败测试。** `test_two_workers_claim_once`: 两连接同时领取，`assert len(valid_leases) == 1`；`test_stale_generation_cannot_complete`: 租约过期重新领取后 `assert await queue.complete(old_lease, result) is False`，事件与结果不变；`test_retry_budget_and_deadline`: attempt 依次 1/2/3，10/30 秒退避，第三次失败终态 failed；`test_probe_rechecks_creator_authorization`: 入队后撤权、执行前拒绝且不返回 metadata。
+- [x] **2. 验证失败。** `uv --directory backend run pytest tests/integration/test_queue_leases.py tests/integration/test_worker_recovery.py tests/integration/test_probe_handler.py -q`。通过 SQL 设置过期租约与 available_at 构造边界；进程恢复测试用子进程/容器，不仅模拟函数返回。
+- [x] **3. 实现租约状态机。** claim 使用有界短事务 `FOR UPDATE SKIP LOCKED`，领取 queued 或到期 retry_wait，增加 attempt/generation、写 running 事件/审计；网络请求在提交后执行。所有写回带 job ID、owner、generation、running 状态与有效租约条件。heartbeat 用独立 session，不能与处理器共享 AsyncSession。回收先使旧租约失效，再写 retry_wait 或最终 failed 及事件/审计。
+- [x] **4. 实现 Worker 并验证恢复。** 并发 4、租约 30 秒、心跳 10 秒、每次执行 120 秒；失败重试时间取退避与 GitHub 限流截止的较晚者。租约丢失立即取消本地协程；优雅停止停止领取并有界等待，超出等待后让租约自然回收。CLI 同时处理 Linux 信号与 Windows KeyboardInterrupt。run_probe 重新读取创建者 enabled/auth_version、fresh 检查仓库，使用用户 token 获取安装仓库列表中的目标 ID 和 metadata；响应后再次检查本地授权是否已失效。强杀旧 Worker 后新 Worker 恢复，旧进程返回不能写回；退出后无需 API 存活。结构化日志记录心跳、队列等待与失败计数，不增加新的公开监控接口。
+- [x] **5. 提交。** 定向测试全部通过，提交 `feat: execute recoverable repository checks with fenced leases`。
 
 ## Task 9: 可回放且可撤权的 SSE
 
