@@ -47,3 +47,35 @@ class CredentialCipher:
             return SecretStr(self._fernet.decrypt(value).decode("utf-8"))
         except (InvalidToken, UnicodeError, ValueError, TypeError):
             raise secret_configuration_error() from None
+
+
+def random_token() -> SecretStr:
+    """256 bits of entropy; URL-safe without padding."""
+    import secrets
+
+    return SecretStr(secrets.token_urlsafe(32))
+
+
+def token_hash(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def csrf_token(signing_key: bytes, raw_session: str) -> str:
+    import hashlib
+    import hmac
+
+    if len(signing_key) < 32:
+        raise secret_configuration_error()
+    return hmac.digest(
+        signing_key, b"devflow:csrf:v1\0" + raw_session.encode("utf-8"), hashlib.sha256
+    ).hex()
+
+
+def verify_csrf(signing_key: bytes, raw_session: str, supplied: str) -> bool:
+    import hmac
+
+    return hmac.compare_digest(
+        csrf_token(signing_key, raw_session).encode("ascii"), supplied.encode("utf-8")
+    )
