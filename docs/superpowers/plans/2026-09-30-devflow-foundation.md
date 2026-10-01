@@ -81,11 +81,11 @@ UV 缓存若受执行环境限制，可用工作区内忽略目录 `.cache/uv`�
 
 固定错误码至少包括 `unauthenticated`、`forbidden`、`resource_not_found`、`validation_error`、`idempotency_conflict`、`github_rate_limited`、`github_unavailable`、`github_configuration_error`、`reauth_required`、`attempt_timeout`；Worker 仅对 rate_limited/unavailable/attempt_timeout 自动重试。FastAPI 参数校验保持 422，但转换为共同错误体，去掉可能携带秘密的原始 input。
 
-- [ ] **1. 建立版本管理与测试运行环境。** 保存并提交已批准的原始方案、规格和本计划；按上述工作树约定准备实现位置。执行 `uv init --package --name devflow --python 3.12 --vcs none backend`，调整到 `src/devflow`；加入一期运行依赖及测试工具，精确 pin 选定 Python 补丁版。使用 `uv add` 维护元数据和锁文件；忽略 `.venv`、`.cache`、`.env`、私钥、生成报告和 Node 构建目录。
-- [ ] **2. 写失败测试。** `test_live_does_not_call_github`: `assert response.status_code == 200; assert github_calls == []`；`test_production_rejects_http_or_missing_secrets`: `with pytest.raises(ValidationError)`；`test_development_http_requires_loopback`: 非 loopback 的 HTTP URL 必须失败；`test_error_and_log_redaction`: `assert all(secret not in output for secret in sentinel_secrets)`，包括 URL 查询中的 OAuth code、Cookie 和 Authorization。
-- [ ] **3. 验证失败。** `uv --directory backend run pytest tests/test_health.py tests/test_config.py tests/test_logging.py -q`；预期因未实现的 app/config/脱敏行为失败，不能因缺 pytest 或错误解释器失败。
-- [ ] **4. 实现并验证。** 构建 app factory、`GET /health/live`、统一异常与结构化日志；显式区分 development/test/production，秘密用 `SecretStr` 或受控文件读取，不记录设置对象。重复上述命令并运行 `uv --directory backend run ruff check .`、`uv --directory backend run ruff format --check .`，均应成功；`uv --directory backend sync --locked` 不改变锁文件。
-- [ ] **5. 提交。** 检查实际差异，仅暂存本任务路径，提交 `chore: initialize uv backend and application runtime`。
+- [x] **1. 建立版本管理与测试运行环境。** 保存并提交已批准的原始方案、规格和本计划；按上述工作树约定准备实现位置。执行 `uv init --package --name devflow --python 3.12 --vcs none backend`，调整到 `src/devflow`；加入一期运行依赖及测试工具，精确 pin 选定 Python 补丁版。使用 `uv add` 维护元数据和锁文件；忽略 `.venv`、`.cache`、`.env`、私钥、生成报告和 Node 构建目录。
+- [x] **2. 写失败测试。** `test_live_does_not_call_github`: `assert response.status_code == 200; assert github_calls == []`；`test_production_rejects_http_or_missing_secrets`: `with pytest.raises(ValidationError)`；`test_development_http_requires_loopback`: 非 loopback 的 HTTP URL 必须失败；`test_error_and_log_redaction`: `assert all(secret not in output for secret in sentinel_secrets)`，包括 URL 查询中的 OAuth code、Cookie 和 Authorization。
+- [x] **3. 验证失败。** `uv --directory backend run pytest tests/test_health.py tests/test_config.py tests/test_logging.py -q`；预期因未实现的 app/config/脱敏行为失败，不能因缺 pytest 或错误解释器失败。
+- [x] **4. 实现并验证。** 构建 app factory、`GET /health/live`、统一异常与结构化日志；显式区分 development/test/production，秘密用 `SecretStr` 或受控文件读取，不记录设置对象。重复上述命令并运行 `uv --directory backend run ruff check .`、`uv --directory backend run ruff format --check .`，均应成功；`uv --directory backend sync --locked` 不改变锁文件。
+- [x] **5. 提交。** 检查实际差异，仅暂存本任务路径，提交 `chore: initialize uv backend and application runtime`。
 
 ## Task 2: PostgreSQL、审计与身份基础
 
