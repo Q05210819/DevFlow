@@ -95,11 +95,11 @@ UV 缓存若受执行环境限制，可用工作区内忽略目录 `.cache/uv`�
 
 共同类型在此定义：`Role = Literal['admin','member']` 放在 auth/types.py；`Page[T](items: list[T], next_cursor: str | None)`、`encode_cursor(actor_id: UUID, purpose: str, position: dict, limit: int) -> str`、`decode_cursor(token: str, actor_id: UUID, purpose: str, limit: int) -> dict` 放在 pagination.py。游标使用 APP_SIGNING_KEY 的标准 HMAC 校验，绑定用户、用途与 limit；本地列表以 `(created_at,id)` 稳定排序，不使用无序 OFFSET。
 
-- [ ] **1. 写失败测试和真实数据库夹具。** `test_migrate_empty_database`: `assert current_revision == script_head`；`test_bootstrap_is_once_and_concurrent_safe`: 两个连接并发引导后 `assert admin_count == 1`，配置改变后再执行不覆盖已有角色；`test_audit_rolls_back_with_mutation`: 强制事务异常后 `assert new_users == [] and new_audits == []`；`test_ready_detects_schema_mismatch`: 连接失败或 revision 不匹配返回 503；`test_cursor_rejects_other_actor_or_purpose`: 篡改签名或跨用户/用途使用时 `assert error.status == 400`。
-- [ ] **2. 验证失败。** `docker compose -p devflow-test -f infra/compose.test.yaml up -d --wait postgres`；`uv --directory backend run pytest tests/integration/test_migrations.py tests/integration/test_bootstrap.py tests/integration/test_audit.py tests/test_health.py tests/test_pagination.py -q`。测试配置仅连接独立测试数据库，每项使用隔离 schema；拒绝指向非测试库，不删除开发/生产数据。
-- [ ] **3. 实现数据基础。** 创建 users、oauth_states、sessions、github_credentials、audit_logs 表及外键/唯一约束，GitHub ID 用 BigInteger，UTC 时间用带时区列。凭据表带 `version`、`needs_reauth`；用户带 `auth_version`；会话保存 cookie 哈希和 expiry。bootstrap 使用事务级 advisory lock，用户表已有记录则不改写；通过 `python -m devflow.bootstrap` 显式执行，不在登录或每次 API 启动时执行。
-- [ ] **4. 验证事务与连接生命周期。** 每个请求、Worker 作业和心跳用独立 AsyncSession；补齐 app lifespan 与 readiness 的数据库/schema 检查。重复第 2 步测试，运行 `uv --directory backend run alembic check`（配置指向测试库），预期无未生成的模型差异。审计只允许固定字段，拒绝透传任意外部响应。
-- [ ] **5. 提交。** `feat: add postgres persistence identity and audit foundation`，包含基础测试数据库的显式启动说明。
+- [x] **1. 写失败测试和真实数据库夹具。** `test_migrate_empty_database`: `assert current_revision == script_head`；`test_bootstrap_is_once_and_concurrent_safe`: 两个连接并发引导后 `assert admin_count == 1`，配置改变后再执行不覆盖已有角色；`test_audit_rolls_back_with_mutation`: 强制事务异常后 `assert new_users == [] and new_audits == []`；`test_ready_detects_schema_mismatch`: 连接失败或 revision 不匹配返回 503；`test_cursor_rejects_other_actor_or_purpose`: 篡改签名或跨用户/用途使用时 `assert error.status == 400`。
+- [x] **2. 验证失败。** `docker compose -p devflow-test -f infra/compose.test.yaml up -d --wait postgres`；`uv --directory backend run pytest tests/integration/test_migrations.py tests/integration/test_bootstrap.py tests/integration/test_audit.py tests/test_health.py tests/test_pagination.py -q`。测试配置仅连接独立测试数据库，每项使用隔离 schema；拒绝指向非测试库，不删除开发/生产数据。
+- [x] **3. 实现数据基础。** 创建 users、oauth_states、sessions、github_credentials、audit_logs 表及外键/唯一约束，GitHub ID 用 BigInteger，UTC 时间用带时区列。凭据表带 `version`、`needs_reauth`；用户带 `auth_version`；会话保存 cookie 哈希和 expiry。bootstrap 使用事务级 advisory lock，用户表已有记录则不改写；通过 `python -m devflow.bootstrap` 显式执行，不在登录或每次 API 启动时执行。
+- [x] **4. 验证事务与连接生命周期。** 每个请求、Worker 作业和心跳用独立 AsyncSession；补齐 app lifespan 与 readiness 的数据库/schema 检查。重复第 2 步测试，运行 `uv --directory backend run alembic check`（配置指向测试库），预期无未生成的模型差异。审计只允许固定字段，拒绝透传任意外部响应。
+- [x] **5. 提交。** `feat: add postgres persistence identity and audit foundation`，包含基础测试数据库的显式启动说明。
 
 ## Task 3: GitHub 客户端与凭据轮换
 
@@ -217,11 +217,11 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 **Interfaces:** `useJobEvents(jobId: string, initialSequence: number, terminal: boolean)` 管理 EventSource、最后序号、去重、关闭与重连；使用 task 9 的 job.status/access_lost 协议，task 7 JobView 是最终状态来源。创建检查时生成一次 UUID 幂等键，同一次请求重试复用该键，用户主动再次检查才生成新键。
 
-- [ ] **1. 写失败测试。** `repositories.spec.ts`: admin 可遍历候选并接入，member 只能看已授权仓库；空态分别显示未接入/无权限/暂不可用。`job-stream.spec.ts`: 事件 `[1,2,2,3]` 仅显示一次序号 2；断线后从最后序号恢复；`expect(connection_attempts_after_terminal).toBe(0)`；access_lost 后关闭流并移除私有结果；404 和暂时网络错误不能共用永久重试逻辑。
-- [ ] **2. 验证失败。** `npm --prefix frontend run test:e2e -- tests/repositories.spec.ts tests/job-stream.spec.ts`。
-- [ ] **3. 实现交互。** 仓库卡片/表格只渲染服务端返回的授权列表；接入不接受手填任意 API URL。检查页先取 JobView，终态直接显示结果、不建立 SSE；非终态通过 `after` 建立流。原生 EventSource 自动重连使用 Last-Event-ID，组件重建使用本地最后序号；收到 terminal 刷新 REST 后关闭。
-- [ ] **4. 验证重连和撤权。** EventSource 网络错误后通过详情接口区分 401/404 与临时故障，永久拒绝停止重连，临时故障有限退避并提供手动恢复。页面卸载关闭流、注销清空缓存、权限丢失清除结果；测试让旧详情请求在注销后迟到返回，`expect(private_result).not.toBeVisible()`。重复第 2 步和前端 typecheck/lint/build；360px 与桌面视口检查表格、按钮、错误消息可读。
-- [ ] **5. 提交。** `feat: add repository access checks and recoverable progress UI`。
+- [x] **1. 写失败测试。** `repositories.spec.ts`: admin 可遍历候选并接入，member 只能看已授权仓库；空态分别显示未接入/无权限/暂不可用。`job-stream.spec.ts`: 事件 `[1,2,2,3]` 仅显示一次序号 2；断线后从最后序号恢复；`expect(connection_attempts_after_terminal).toBe(0)`；access_lost 后关闭流并移除私有结果；404 和暂时网络错误不能共用永久重试逻辑。
+- [x] **2. 验证失败。** `npm --prefix frontend run test:e2e -- tests/repositories.spec.ts tests/job-stream.spec.ts`。
+- [x] **3. 实现交互。** 仓库卡片/表格只渲染服务端返回的授权列表；接入不接受手填任意 API URL。检查页先取 JobView，终态直接显示结果、不建立 SSE；非终态通过 `after` 建立流。原生 EventSource 自动重连使用 Last-Event-ID，组件重建使用本地最后序号；收到 terminal 刷新 REST 后关闭。
+- [x] **4. 验证重连和撤权。** EventSource 网络错误后通过详情接口区分 401/404 与临时故障，永久拒绝停止重连，临时故障有限退避并提供手动恢复。页面卸载关闭流、注销清空缓存、权限丢失清除结果；测试让旧详情请求在注销后迟到返回，`expect(private_result).not.toBeVisible()`。重复第 2 步和前端 typecheck/lint/build；360px 与桌面视口检查表格、按钮、错误消息可读。
+- [x] **5. 提交。** `feat: add repository access checks and recoverable progress UI`。
 
 ## Task 12: 部署、CI 与阶段验收
 
