@@ -86,3 +86,7 @@ CI 使用隔离 PostgreSQL schema、合成 GitHub transport/秘密，无需真�
 ## 当前验收边界
 
 本地完整测试、容器与恢复演练的命令和实际结果见 [阶段验收](foundation-acceptance.md)。浏览器联调使用真实 API、Worker 和 PostgreSQL，仅 GitHub HTTP 使用合成 transport；测试端口 31847/31848 必须空闲。真实 App、私有仓库及公网 HTTPS 配置尚未提供，真实接入为**未执行**。
+
+## 固定认证期限与权限缓存（2026-10-13）
+
+`OAUTH_STATE_TTL_SECONDS` 仅接受 600，`SESSION_TTL_SECONDS` 仅接受 28800；其他值在启动校验时失败。`PERMISSION_CACHE_TTL_SECONDS` 接受 0–60（默认 60），以在线校验开始时刻计算正缓存到期；0 禁止复用。每次授权仍检查本地版本，提交和 Worker 保留新鲜在线核验。Settings 的人类可读校验错误隐藏原始输入；不要记录带原始 input 的 `ValidationError.errors()`。

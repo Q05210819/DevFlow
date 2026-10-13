@@ -219,21 +219,22 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 
 - [x] **1. 写失败测试。** `repositories.spec.ts`: admin 可遍历候选并接入，member 只能看已授权仓库；空态分别显示未接入/无权限/暂不可用。`job-stream.spec.ts`: 事件 `[1,2,2,3]` 仅显示一次序号 2；断线后从最后序号恢复；`expect(connection_attempts_after_terminal).toBe(0)`；access_lost 后关闭流并移除私有结果；404 和暂时网络错误不能共用永久重试逻辑。
 - [x] **2. 验证失败。** `npm --prefix frontend run test:e2e -- tests/repositories.spec.ts tests/job-stream.spec.ts`。
-- [x] **3. 实现交互。** 仓库卡片/表格只渲染服务端返回的授权列表；接入不接受手填任意 API URL。检查页先取 JobView，终态直接显示结果、不建立 SSE；非终态通过 `after` 建立流。原生 EventSource 自动重连使用 Last-Event-ID，组件重建使用本地最后序号；收到 terminal 刷新 REST 后关闭。
-- [x] **4. 验证重连和撤权。** EventSource 网络错误后通过详情接口区分 401/404 与临时故障，永久拒绝停止重连，临时故障有限退避并提供手动恢复。页面卸载关闭流、注销清空缓存、权限丢失清除结果；测试让旧详情请求在注销后迟到返回，`expect(private_result).not.toBeVisible()`。重复第 2 步和前端 typecheck/lint/build；360px 与桌面视口检查表格、按钮、错误消息可读。
+- [x] **3. 实现交互。** 仓库卡片/表格只渲染服务端返回的授权列表；接入不接受手填任意 API URL。检查页先取 JobView，终态直接显示结果、不建立 SSE；非终态通过 `after` 建立流。网络错误时主动关闭原 EventSource，先用 REST 分类权限和暂时故障，再按 1/2/4 秒有界重建并携带本地最后序号 `after`；服务端仍独立支持 Last-Event-ID 优先级。收到 terminal 后关闭流并刷新 REST。
+- [x] **4. 验证重连和撤权。** EventSource 网络错误后通过详情接口区分 401/403/404 与临时故障，永久拒绝停止重连，临时故障有限退避并提供手动恢复。页面卸载关闭流、注销清空缓存、权限丢失清除结果；测试让旧详情请求在注销后迟到返回，`expect(private_result).not.toBeVisible()`。重复第 2 步和前端 typecheck/lint/build；360px 与桌面视口检查表格、按钮、错误消息可读。
 - [x] **5. 提交。** `feat: add repository access checks and recoverable progress UI`。
 
 ## Task 12: 部署、CI 与阶段验收
 
 **Files:** 创建 `infra/{compose.yaml,compose.dev.yaml,backend.Dockerfile,frontend.Dockerfile,Caddyfile}`、`.dockerignore`、`.github/workflows/ci.yml`、`docs/operations/{local-development,github-app-setup,deployment,backup-restore,foundation-acceptance}.md`、`backend/tests/integration/test_full_flow.py`、`backend/tests/support/{__init__,browser_server}.py`、`frontend/tests/full-flow.spec.ts`；修改 `.env.example`、`README.md`、Playwright config、测试数据库配置。实际版本解析结果记录在 `docs/operations/local-development.md`。
 
-**Interfaces:** Compose 服务固定命名 `gateway`、`frontend`、`api`、`worker`、`postgres`、`migrate`；migrate 完成 `alembic upgrade head` 和一次性 bootstrap 后退出。backend image 同时供 API/Worker 使用，API 入口 `uv run --no-sync uvicorn devflow.app:create_app --factory --host 0.0.0.0 --port 8000`，Worker 入口 `uv run --no-sync python -m devflow.worker`。`foundation-acceptance.md` 每项记录命令、环境、结果和限制；未执行写明未执行，不预填通过。
+**Interfaces:** Compose 服务固定命名 `gateway`、`frontend`、`api`、`worker`、`postgres`、`migrate`；migrate 完成 `alembic upgrade head` 和一次性 bootstrap 后退出。backend image 同时供 API/Worker 使用，API 入口 `uv run --no-sync uvicorn devflow.app:create_app --factory --host 0.0.0.0 --port 8000 --no-access-log --loop asyncio:SelectorEventLoop`，Worker 入口 `uv run --no-sync python -m devflow.worker`。`foundation-acceptance.md` 每项记录命令、环境、结果和限制；未执行写明未执行，不预填通过。
 
-- [ ] **1. 写跨模块失败测试与部署清单。** `test_full_flow`: 允许用户 → 登录 → 发现/注册 → 提交 → Worker → REST 终态与审计，断言 `status == 'succeeded'`、检查 repo ID 正确、事件有序。`full-flow.spec.ts` 使用真实 FastAPI/Worker/PostgreSQL，测试专用 browser_server 在测试目录注入 HTTPX GitHub transport，浏览器 OAuth 跳转由 Playwright 拦截回测试 callback；生产 app 不增加测试登录接口。断言真实前端和后端字段兼容，撤权后页面移除结果。
-- [ ] **2. 验证失败并构建部署配置。** `uv --directory backend run pytest tests/integration/test_full_flow.py -q`、`npm --prefix frontend run test:e2e -- tests/full-flow.spec.ts` 首次应因缺联调行为失败。添加多阶段镜像，后端 `uv sync --locked --no-dev`、前端 `npm ci` 与 standalone 输出；镜像 non-root、秘密只运行时挂载。API/Worker 等待 postgres healthy 与 migrate successful；gateway 将 `/api/*`、`/health/*` 原样转后端，其余到前端，SSE 关闭缓冲。[Compose 启动依赖](https://docs.docker.com/compose/how-tos/startup-order/)
-- [ ] **3. 运行完整离线与容器验证。** 执行下方命令组；CI 使用隔离 PostgreSQL 服务、合成凭据和 mock GitHub，不依赖真实秘密。配置任务故意遗漏秘密时应启动失败；数据库断开或 schema 不匹配时 readiness 为 503。检查镜像层/构建上下文/日志无植入秘密，扫描 `.gitignore`、`.dockerignore` 和 build args 防止把真实 `.env` 打包。
-- [ ] **4. 完成恢复演练和真实验收。** 在独立 `devflow-acceptance` Compose 项目执行空库启动、API 重启、Worker 强杀/租约回收、迁移与备份恢复。使用 `pg_dump` 写容器内或显式文件输出，避免 PowerShell 文本重定向损坏二进制备份；恢复到独立空库比较用户、仓库、作业、事件/审计计数及凭据可解密性，不覆盖现有库。已有真实 App、域名与私有仓库配置时完成真实登录/检查/撤权；若缺外部配置，完成不依赖它的代码与测试后在报告列出剩余输入，阶段不能标记全部验收通过。
-- [ ] **5. 提交与审查。** 提交 `chore: package deployment and verify foundation acceptance`；执行全阶段代码审查，修复影响目标的发现，再记录实际检查结果。仅在用户选定执行方式并完成相应审查流程后结束实现；本计划不包含发布到未知外部服务器。
+- [x] **1. 写跨模块失败测试与部署清单。** `test_full_flow`: 允许用户 → 登录 → 发现/注册 → 提交 → Worker → REST 终态与审计，断言 `status == 'succeeded'`、检查 repo ID 正确、事件有序。`full-flow.spec.ts` 使用真实 FastAPI/Worker/PostgreSQL，测试专用 browser_server 在测试目录注入 HTTPX GitHub transport，浏览器 OAuth 跳转由 Playwright 拦截回测试 callback；生产 app 不增加测试登录接口。断言真实前端和后端字段兼容，撤权后页面移除结果。
+- [x] **2. 验证失败并构建部署配置。** `uv --directory backend run pytest tests/integration/test_full_flow.py -q`、`npm --prefix frontend run test:e2e -- tests/full-flow.spec.ts` 首次应因缺联调行为失败。添加多阶段镜像，后端 `uv sync --locked --no-dev`、前端 `npm ci` 与 standalone 输出；镜像 non-root、秘密只运行时挂载。API/Worker 等待 postgres healthy 与 migrate successful；gateway 将 `/api/*`、`/health/*` 原样转后端，其余到前端，SSE 关闭缓冲。[Compose 启动依赖](https://docs.docker.com/compose/how-tos/startup-order/)
+- [x] **3. 运行完整离线与容器验证。** 执行下方命令组；CI 使用隔离 PostgreSQL 服务、合成凭据和 mock GitHub，不依赖真实秘密。配置任务故意遗漏秘密时应启动失败；数据库断开或 schema 不匹配时 readiness 为 503。检查镜像层/构建上下文/日志无植入秘密，扫描 `.gitignore`、`.dockerignore` 和 build args 防止把真实 `.env` 打包。
+- [x] **4a. 本地恢复演练完成。** 2026-10-01 已完成独立 Compose 空库启动、API 重启、非空备份及独立恢复，核对计数、凭据解密和授权序列；Worker 强杀/租约回收由真实 PostgreSQL 子进程测试覆盖，Compose 另验证 Linux Worker 入口及正常停止。2026-10-13 修复后重建受影响镜像并更新本地运行证据；未变更 schema/crypto，恢复证据保持原日期，详见 [验收记录](../../operations/foundation-acceptance.md)。
+- [ ] **4b. 真实外部验收未执行。** 缺少真实 GitHub App、域名与私有仓库；真实登录/检查/webhook 撤权、公网 TLS、远程 CI 和外部部署仍为 NOT EXECUTED，不据本地检查标记全部真实验收通过。
+- [ ] **5. 实现已完成，最终限域复审待控制器结论。** 部署与联调实现及全阶段审查修复已提交；2026-10-13 全分支审查的 I1–I4/M1–M4 已在合并修复波次处理并记录实际验证。控制器完成最终限域复审后更新本项；不包含发布到未知外部服务器。
 
 ### 全阶段验证命令
 

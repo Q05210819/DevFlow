@@ -2,7 +2,43 @@
 
 2026-10-01，本地离线应用联调、Linux 容器运行及独立数据库恢复检查通过。**真实 GitHub App、私有仓库、公网 TLS 签发、远程 GitHub Actions 和外部部署均未执行**，因此不声明全部真实接入验收完成。工程取舍保留在 [决策记录](foundation-decisions.md)。
 
-## 源码、环境与镜像
+## 2026-10-13 最终审查修复与新验证
+
+本节是新证据；后续各节保留 **2026-10-01 历史记录**。最终全分支审查的 I1–I4/M1–M4 已处理，实施提交为 `cfe00094a6c55abe38ae97420380817f9cb350e1`，父提交为 `18eba997cd81e35e529230533653ef587f42da24`。控制器最终限域复审仍待结论，不能把本节解释为真实外部验收通过。
+
+本次修复启动校验输入脱敏、注销 User→Session 锁序、服务端请求 UUID 与 HTTP 审计关联、终态失败中文说明、失败分页恢复、终态 REST 尝试次数优先级、测试 schema 异常清理和真实生效的 TTL 配置。认证期限固定 600/28800 秒，权限正缓存为 0–60 秒（默认 60，0 禁止复用）；详见 [本地开发](local-development.md) 和决策 40–41。
+
+主工作树 `D:/python/DevFlow/.worktrees/foundation`，UV 缓存 `.cache/uv`；复用已锁定依赖、Python 3.12.13、UV 0.11.25、Node 24.21.0 和 Chromium 1243。后端专用测试 PostgreSQL 为 loopback 55439/devflow_test，每项仅清理自己生成的 schema。锁文件无差异，没有依赖升级。
+
+| 2026-10-13 实际命令 | 结果（退出 0） | 本工作树日志 |
+| --- | --- | --- |
+| `uv --directory backend run ruff check .` | All checks passed | `.cache/final-fix/ruff-check.log` |
+| `uv --directory backend run ruff format --check .` | 90 files already formatted | `.cache/final-fix/ruff-format.log` |
+| `uv --directory backend run pytest -m 'not live_github' -q --tb=short --basetemp ../.cache/final-fix/pytest-full -p no:cacheprovider` | **405 passed，153.11 秒** | `.cache/final-fix/backend-full.log` |
+| `npm.cmd --prefix frontend run typecheck` | 通过 | `.cache/final-fix/frontend-typecheck.log` |
+| `npm.cmd --prefix frontend run lint` | 通过 | `.cache/final-fix/frontend-lint.log` |
+| `npm.cmd --prefix frontend run build` | 通过，7 个页面生成 | `.cache/final-fix/frontend-build.log` |
+| `npm.cmd --prefix frontend run test:e2e` | **37 passed，27.5 秒** | `.cache/final-fix/frontend-test-e2e.log` |
+
+新增回归先 RED 后 GREEN：设置/清理和服务回归证明原始问题；13 项浏览器检查全部先失败，修复后 13 passed（19.5 秒）。最终聚焦后端 16 passed（12.02 秒），包括真实 Uvicorn、Worker/bootstrap 启动失败、真实 PostgreSQL 注销/停用并发、事务回滚、HTTP/流响应审计作用域和非默认缓存 TTL。初次测试沙箱临时目录 ACL 阻断后改用获准本地测试执行；完整后端开始前 Ruff 捕获的一处换行已修正。这些失败与通过分别保存在 `.cache/final-fix/backend-red*.log`、`backend-green*.log`、`frontend-red.log`、`frontend-green.log`，不把环境失败计为产品 RED。
+
+### 新镜像与本地运行
+
+使用本工作树 `infra/compose.yaml` + `compose.dev.yaml`，绝对 `--env-file D:/python/DevFlow/.worktrees/frontend/.cache/task12b2/config.env`，项目仅 `devflow-acceptance`。确认 8080/55440 无监听后，`config --quiet`、`build api frontend`、`up -d --wait` 均退出 0；生产配置也单独 `config --quiet` 成功。构建时产品文件与上述实施提交一致，后续仅文档变更；新镜像 API 中 **42 个 Python 源文件 SHA256** 与本工作树完全一致，导出的 **79 个构建上下文文件** 也逐字节一致（`.cache/final-fix/context-hashes.json`）。
+
+| 服务 | 实际 image ID | 本次状态 |
+| --- | --- | --- |
+| API / Worker / migrate | `sha256:f8a2a20e5112fbd1faf4576dee02b0c46628b725320f7210fb3f12f952ec9ef7` | 新建，三服务同一镜像，UID 10001 |
+| frontend | `sha256:58fd59e2efd9c8c628c5ce02ed5eacb727227c4ee91261080fd8c158ad10903d` | 新建，user node |
+| gateway | `sha256:4aab1a0b72d7d9187486f1faf19e425458296a77b40985d06b2679e1add90a11` | 复用 10 月 1 日未改动镜像 |
+
+实测 gateway `/health/live`、`/health/ready`、`/` 和实际 JS 资源均 200；无会话 `/api/v1/session` 为 401。新镜像的 API 默认入口、Worker 和 bootstrap 在无效生产 HTTP origin 下均退出 **1**，捕获 stdout/stderr 中已知合成秘密匹配 **0**，只记录布尔结果；健康配置下 API 可用，Worker 正常停止退出 **0**，重启成功。migrate 在保留数据库上退出 0，没有重新播种或修改 schema。
+
+新 backend/frontend 合并导出归档的 **31 个成员/层** 与 79 个上下文文件扫描 **8 个合成模式，0 匹配**；3 份新构建/运行日志扫描 **10 个模式，0 匹配**。日志和有限样本扫描不代表穷尽任意秘密。详细证据在 `.cache/final-fix/{image-build.log,context-build.log,image-scan.log,runtime-start.log,runtime-check.log,runtime-summary.json,runtime-services.log}`，探测脚本为同目录 `runtime.py`、`scan.py`。
+
+最后只执行本项目 `stop`，六服务均 exited，Worker/migrate/Postgres/gateway 退出 0，API/frontend 停止后的记录为 143；保留 postgres-data、caddy-data、caddy-config 三卷。最终状态见 `.cache/final-fix/runtime-final-state.jsonl` 和 `runtime-stop.log`；未停止专用测试数据库或其他项目。没有 schema/加密变更，**备份恢复演练未重复**，下方非空恢复和旧镜像扫描保持 10 月 1 日历史归属。真实 GitHub App、私有仓库、公网 TLS、远程 CI 和外部部署继续 **NOT EXECUTED**。
+
+## 2026-10-01 历史源码、环境与镜像
 
 应用源码为已独立审查的 `b20dc951bf7da7f70317627207b5c7bad0249c07`，包含 Worker 审计租约围栏、SSE 和真实浏览器联调；网关另包含本次 Compose 构建中移除无用文件能力的修复。随后仅更新运维记录及 CI，未改动应用源码或锁文件。若后续变更产品源码，以下镜像证据不能自动覆盖新版本。
 
