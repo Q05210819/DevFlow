@@ -78,7 +78,7 @@ def _next_page(response: httpx.Response, page: int) -> int | None:
             )
             if match is None:
                 raise unavailable()
-            relation = (match[2] or match[3]).split()
+            relation = (match[2] or match[3]).lower().split()
             if "next" not in relation:
                 continue
             if relation != ["next"]:

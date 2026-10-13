@@ -132,6 +132,35 @@ async def test_invalid_token_response_is_not_cached(github_settings, changes):
     assert len(calls) == 2
 
 
+async def test_token_json_recursion_failure_is_controlled_and_not_cached(
+    github_settings,
+):
+    from devflow.github.installations import InstallationTokens
+
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(201, content=b"[" * 50000 + b"]" * 50000)
+
+    async def before_request():
+        pass
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+        tokens = InstallationTokens(GitHubClient(http, github_settings))
+        for _ in range(2):
+            with pytest.raises(AppError) as caught:
+                await tokens.get(
+                    42,
+                    81,
+                    {"issues": "read"},
+                    auth_version=(1, 1),
+                    before_request=before_request,
+                )
+            assert caught.value.code == "github_unavailable"
+    assert len(calls) == 2
+
+
 async def test_cache_is_scoped_by_installation_repository_permissions_and_epoch(
     github_settings,
 ):

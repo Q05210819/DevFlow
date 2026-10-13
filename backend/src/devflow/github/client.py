@@ -47,7 +47,7 @@ def _json(response: httpx.Response) -> dict:
         if not isinstance(value, dict):
             raise TypeError
         return value
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError, UnicodeError, RecursionError):
         raise unavailable() from None
 
 

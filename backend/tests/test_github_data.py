@@ -78,6 +78,81 @@ async def test_malformed_next_link_is_not_completion(settings_factory, link):
     assert caught.value.code == "github_unavailable"
 
 
+@pytest.mark.parametrize("relation", ["NEXT", "Next"])
+async def test_registered_next_relation_is_case_insensitive(settings_factory, relation):
+    from devflow.github.data import GitHubDataClient
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(
+                200,
+                json=[],
+                headers={
+                    "link": f'<https://api.github.com/repos/team/private/issues?page=2>; rel="{relation}"'
+                },
+            )
+        )
+    ) as http:
+        result = await GitHubDataClient(GitHubClient(http, settings_factory())).read(
+            TOKEN, "team/private", "issues"
+        )
+    assert result.next_page == 2
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        '<https://attacker.invalid/repos/team/private/issues?page=2>; rel="Next"',
+        '<https://api.github.com/repos/team/private/issues?page=2>; rel="next", <https://api.github.com/repos/team/private/issues?page=3>; rel="NEXT"',
+        '<https://api.github.com/repos/team/private/issues?page=2>; rel="PreV NeXt"',
+    ],
+)
+async def test_next_relation_case_does_not_bypass_validation(settings_factory, link):
+    from devflow.github.data import GitHubDataClient
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json=[], headers={"link": link})
+        )
+    ) as http:
+        with pytest.raises(AppError) as caught:
+            await GitHubDataClient(GitHubClient(http, settings_factory())).read(
+                TOKEN, "team/private", "issues"
+            )
+    assert caught.value.code == "github_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("headers", "code"),
+    [
+        ({}, "permission_missing"),
+        (
+            {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "4102444800"},
+            "github_rate_limited",
+        ),
+    ],
+)
+async def test_error_body_recursion_preserves_header_classification(
+    settings_factory, headers, code
+):
+    from devflow.github.data import GitHubDataClient
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(
+                403, headers=headers, content=b"[" * 50000 + b"]" * 50000
+            )
+        )
+    ) as http:
+        with pytest.raises(AppError) as caught:
+            await GitHubDataClient(GitHubClient(http, settings_factory())).read(
+                TOKEN, "team/private", "issues"
+            )
+    assert caught.value.code == code
+    if code == "github_rate_limited":
+        assert caught.value.retry_at == datetime(2100, 1, 1, tzinfo=UTC)
+
+
 @pytest.mark.parametrize(
     ("endpoint", "target", "attempt", "path", "payload", "items"),
     [
