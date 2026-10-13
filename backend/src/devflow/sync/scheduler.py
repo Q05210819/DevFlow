@@ -12,7 +12,7 @@ from devflow.errors import AppError
 from devflow.jobs.models import Job
 from devflow.jobs.service import append_event
 from devflow.repositories.models import Repository
-from devflow.sync.models import RepositorySync, SyncCursor, SyncDemand
+from devflow.sync.models import RepositorySync, SyncDemand
 from devflow.sync.schemas import BackfillRange, SyncDemandInput, SyncTarget
 from devflow.sync.scope import authorized, lock_scope, transaction
 
@@ -47,12 +47,28 @@ async def enqueue(db, state, installation, repository, *, continued=False):
         state.request_count = 0
         state.round_started_at = now
         captured = demands[-1].sequence
+        streams = ["issues", "pulls", "actions"]
+        if demands[0].backfill is not None:
+            streams = BackfillRange.model_validate(demands[0].backfill).streams
+        elif all(d.target is not None for d in demands):
+            kinds = {SyncTarget.model_validate(d.target).kind for d in demands}
+            streams = [
+                stream
+                for stream, kind in (
+                    ("issues", "issue"),
+                    ("pulls", "pull"),
+                    ("actions", "ci_run"),
+                )
+                if kind in kinds
+            ]
     else:
         old = await db.get(Job, state.active_job_id)
         captured = old.input["captured_sequence"]
+        streams = old.input["streams"]
     value = {
         "generation": state.generation,
         "captured_sequence": captured,
+        "streams": streams,
         "installation_id": installation.installation_id,
         "installation_version": installation.auth_version,
         "repository_version": repository.auth_version,
@@ -130,15 +146,8 @@ async def request_sync(
         )
     )
     if state.active_job_id is None and can_start:
-        cursors = list(
-            await db.scalars(
-                select(SyncCursor).where(SyncCursor.repository_id == repository_id)
-            )
-        )
-        resumable = state.status in {"failed", "budget_exhausted"} and any(
-            c.status != "complete" for c in cursors
-        )
-        if resumable:
+        # A round can fail before its first snapshot created any cursor.
+        if state.status in {"failed", "budget_exhausted"}:
             previous = await db.scalar(
                 select(Job)
                 .where(
@@ -149,8 +158,9 @@ async def request_sync(
                 .limit(1)
             )
             state.active_job_id = previous.id
-            state.request_count = 0
-            state.round_started_at = await db.scalar(select(func.clock_timestamp()))
+            if resume:
+                state.request_count = 0
+                state.round_started_at = await db.scalar(select(func.clock_timestamp()))
             await enqueue(db, state, installation, repository, continued=True)
         else:
             await enqueue(db, state, installation, repository)

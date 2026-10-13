@@ -752,3 +752,170 @@ async def test_repeated_target_demands_coalesce_in_next_round(sync_env):
     work = await env.sync.snapshot(await env.queue.claim(uuid4()))
     assert work.captured_sequence == 4
     assert work.cursor.pending_targets == [target]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", ["count", "time"])
+@pytest.mark.parametrize("initialized", [False, True])
+async def test_failed_round_refresh_preserves_budget_until_explicit_resume(
+    sync_env, limit, initialized
+):
+    from devflow.errors import AppError
+    from devflow.sync.handlers import run_sync
+    from devflow.sync.scheduler import request_sync
+
+    env = sync_env
+    await demand(env)
+    lease = await env.queue.claim(uuid4())
+    saved = None
+    if initialized:
+        work = await env.sync.snapshot(lease)
+        saved = work.cursor.model_copy(
+            update={
+                "page": 7,
+                "pending_targets": [SyncTarget(kind="issue", source_id=501, number=1)],
+            }
+        )
+        await env.sync.commit_page(
+            lease, work, facts=[], collections=[], checkpoint=saved, complete=False
+        )
+    async with env.factory.begin() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        state.request_count = 10000 if limit == "count" else 4
+        if limit == "time":
+            state.round_started_at = datetime.now(UTC) - timedelta(hours=24)
+        original = state.generation, state.request_count, state.round_started_at
+    assert await env.queue.fail(lease, "github_unavailable", False)
+    await demand(env)
+    retried = await env.queue.claim(uuid4())
+    work = await env.sync.snapshot(retried)
+    if saved:
+        assert work.cursor == saved
+    async with env.factory() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        assert (
+            state.generation,
+            state.request_count,
+            state.round_started_at,
+        ) == original
+
+    async def unreachable_collector(*args):
+        pytest.fail("Exhausted round must not reach a collector or HTTP")
+
+    with pytest.raises(AppError) as failure:
+        await run_sync(
+            retried, env.sync, env.data, env.tokens, collector=unreachable_collector
+        )
+    assert failure.value.code == "budget_exhausted" and not env.data_calls
+    await env.queue.fail(retried, failure.value.code, False)
+    async with env.factory.begin() as db:
+        await request_sync(db, env.repository.id, reason="refresh", resume=True)
+    resumed = await env.queue.claim(uuid4())
+    renewed = await env.sync.snapshot(resumed)
+    assert renewed.cursor == work.cursor
+    async with env.factory() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        assert state.generation == original[0] and state.request_count == 0
+        assert state.round_started_at > original[2]
+    await env.sync.reserve_request(resumed, renewed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["backfill", "webhook"])
+@pytest.mark.parametrize("existing", [False, True])
+async def test_selected_round_preserves_excluded_stream_evidence(
+    sync_env, reason, existing
+):
+    from devflow.sync.scheduler import request_sync
+    from devflow.sync.schemas import BackfillRange, SyncCheckpoint, SyncWindow
+
+    env = sync_env
+    since, until = datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 2, 1, tzinfo=UTC)
+    if existing:
+        async with env.factory.begin() as db:
+            for stream, status, error in [
+                ("pulls", "partial", "source_limit"),
+                ("actions", "permission_missing", "permission_missing"),
+            ]:
+                db.add(
+                    SyncCursor(
+                        repository_id=env.repository.id,
+                        stream=stream,
+                        checkpoint=SyncCheckpoint(
+                            stream=stream,
+                            window=SyncWindow(since=since, until=until),
+                            page=4,
+                        ).model_dump(mode="json"),
+                        status=status,
+                        error_code=error,
+                        covered_from=since,
+                        covered_until=until,
+                        completed_watermark=until,
+                        last_success_at=until,
+                    )
+                )
+
+    async def evidence():
+        async with env.factory() as db:
+            return [
+                (
+                    c.stream,
+                    c.status,
+                    c.error_code,
+                    c.checkpoint,
+                    c.covered_from,
+                    c.covered_until,
+                    c.completed_watermark,
+                    c.last_success_at,
+                )
+                for c in await db.scalars(
+                    select(SyncCursor)
+                    .where(
+                        SyncCursor.repository_id == env.repository.id,
+                        SyncCursor.stream.in_(("pulls", "actions")),
+                    )
+                    .order_by(SyncCursor.stream)
+                )
+            ]
+
+    before = await evidence()
+    async with env.factory.begin() as db:
+        await request_sync(
+            db,
+            env.repository.id,
+            reason=reason,
+            backfill=BackfillRange(since=since, until=until, streams=["issues"])
+            if reason == "backfill"
+            else None,
+            target=SyncTarget(kind="issue", source_id=501, number=1)
+            if reason == "webhook"
+            else None,
+        )
+    lease = await env.queue.claim(uuid4())
+    work = await env.sync.snapshot(lease)
+    assert work.cursor.stream == "issues" and await evidence() == before
+    assert await env.sync.continue_job(lease, work)
+    lease = await env.queue.claim(uuid4())
+    work = await env.sync.snapshot(lease)
+    assert work.cursor.stream == "issues" and await evidence() == before
+    # Failure status applies only to participating streams, too.
+    assert await env.queue.fail(lease, "github_unavailable", True)
+    assert await evidence() == before
+    async with env.factory.begin() as db:
+        job = await db.get(Job, lease.job_id)
+        job.available_at = since
+    lease = await env.queue.claim(uuid4())
+    work = await env.sync.snapshot(lease)
+    assert await env.sync.commit_page(
+        lease,
+        work,
+        facts=[],
+        collections=[],
+        checkpoint=work.cursor.model_copy(update={"stage": "done"}),
+        complete=True,
+    )
+    assert await evidence() == before
+    async with env.factory() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        assert state.status == "completed" and state.active_job_id is None
+        assert state.processed_sequence == state.requested_sequence == 1

@@ -349,6 +349,7 @@ class Queue:
         cursors = await session.scalars(
             select(SyncCursor).where(
                 SyncCursor.repository_id == job.repository_id,
+                SyncCursor.stream.in_(job.input.get("streams", ())),
                 SyncCursor.status != "complete",
             )
         )

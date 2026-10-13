@@ -75,6 +75,7 @@ class SyncService:
                 and (
                     work.generation != state.generation
                     or work.captured_sequence != job.input.get("captured_sequence")
+                    or work.cursor.stream not in job.input["streams"]
                 )
             )
         ):
@@ -111,14 +112,11 @@ class SyncService:
             ("pulls", "pull"),
             ("actions", "ci_run"),
         ):
+            if stream not in job.input["streams"]:
+                continue
             row = await db.get(SyncCursor, (repository.id, stream))
             if row and row.checkpoint["captured_sequence"] == sequence:
                 continue
-            active = (
-                stream in backfill.streams
-                if backfill
-                else not targeted or any(t.kind == kind for t in targets)
-            )
             mode = (
                 "backfill"
                 if backfill
@@ -150,7 +148,7 @@ class SyncService:
                 else SyncWindow(since=since, until=state.round_started_at),
                 pending_targets=[t for t in targets if t.kind == kind],
                 captured_sequence=sequence,
-                stage="enumerate" if active else "done",
+                stage="enumerate",
             )
             if row is None:
                 row = SyncCursor(
@@ -161,7 +159,7 @@ class SyncService:
                 db.add(row)
             else:
                 row.checkpoint = checkpoint.model_dump(mode="json")
-            row.status = "pending" if active else "complete"
+            row.status = "pending"
             row.error_code = None
         await db.flush()
 
@@ -175,7 +173,10 @@ class SyncService:
             # Fixed domain order: issues -> pulls -> actions.
             cursors = list(
                 await db.scalars(
-                    select(SyncCursor).where(SyncCursor.repository_id == repository.id)
+                    select(SyncCursor).where(
+                        SyncCursor.repository_id == repository.id,
+                        SyncCursor.stream.in_(job.input["streams"]),
+                    )
                 )
             )
             cursor = next(
@@ -368,6 +369,7 @@ class SyncService:
                     .select_from(SyncCursor)
                     .where(
                         SyncCursor.repository_id == repository.id,
+                        SyncCursor.stream.in_(job.input["streams"]),
                         SyncCursor.status != "complete",
                     )
                 )
@@ -389,7 +391,8 @@ class SyncService:
                         c.checkpoint["mode"] in {"initial", "reconcile"}
                         for c in await db.scalars(
                             select(SyncCursor).where(
-                                SyncCursor.repository_id == repository.id
+                                SyncCursor.repository_id == repository.id,
+                                SyncCursor.stream.in_(job.input["streams"]),
                             )
                         )
                     ):
