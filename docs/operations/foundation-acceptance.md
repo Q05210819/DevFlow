@@ -2,6 +2,14 @@
 
 2026-10-01，本地离线应用联调、Linux 容器运行及独立数据库恢复检查通过。**真实 GitHub App、私有仓库、公网 TLS 签发、远程 GitHub Actions 和外部部署均未执行**，因此不声明全部真实接入验收完成。工程取舍保留在 [决策记录](foundation-decisions.md)。
 
+## 2026-10-13 本地合并至 main
+
+按用户选择，将 `codex/foundation` 的 `a15923f1acd78966fbc315a4ee8ac125c5b20eff` 快进合并至 `main`，主目录为 `D:/python/DevFlow`，没有冲突、远程推送或外部部署。产品源码仍与已审查的 `cfe0009` 一致。合并前主目录已有 `DevFlow.md` 修改及未跟踪的 `.idea`；8 个原有文件的 SHA256 核对一致，全部保留，未代用户提交。
+
+主目录执行 `uv --directory backend sync --locked`，重新创建 Python 3.12.13 虚拟环境，确认 devflow 导入来自主目录。复用原 Node 24.21.0 与前端依赖后，在主目录重新执行 Ruff 检查/格式检查、完整后端测试及前端 typecheck/lint/build/test:e2e：**405 passed（144.46 秒）**、**37 passed（28.0 秒）**，各检查最终退出 0。前端构建首次因沙箱 `spawn EPERM` 失败，获准执行后通过，保留初次失败日志；没有修改源码规避检查。实际日志见主目录 `.cache/merge-verification/`，后端命令仍使用专用测试数据库、`-m 'not live_github'` 与独立 basetemp。
+
+原 `.cache` 和审查记录分别保留到主目录同名忽略目录；旧虚拟环境等剩余 23 项本地产物移入 `.cache/foundation-local-artifacts-20261013/`。确认无未提交内容后正常移除 foundation 工作树并删除已合并分支，没有使用强制删除。其他工作树保留。验证后停止本轮启动的 `devflow-test` PostgreSQL（退出 0、卷保留）。下文旧工作树路径为历史证据位置，当前源码与开发入口使用主目录；真实外部验收边界不变。
+
 ## 2026-10-13 最终审查修复与新验证
 
 本节是新证据；后续各节保留 **2026-10-01 历史记录**。最终全分支审查的 I1–I4/M1–M4 已处理，实施提交为 `cfe00094a6c55abe38ae97420380817f9cb350e1`，父提交为 `18eba997cd81e35e529230533653ef587f42da24`。2026-10-13，独立限域复审完成，审查范围为 `18eba99..70dd30c`：8 项发现全部解决，未发现修复引入的新问题，本地实现审查门槛关闭。其后的收尾提交仅更新文档状态，产品源码仍为上述已验证版本。此结论不代表真实外部验收通过。
@@ -38,7 +46,7 @@
 
 最后只执行本项目 `stop`，六服务均 exited，Worker/migrate/Postgres/gateway 退出 0，API/frontend 停止后的记录为 143；保留 postgres-data、caddy-data、caddy-config 三卷。最终状态见 `.cache/final-fix/runtime-final-state.jsonl` 和 `runtime-stop.log`；未停止专用测试数据库或其他项目。没有 schema/加密变更，**备份恢复演练未重复**，下方非空恢复和旧镜像扫描保持 10 月 1 日历史归属。真实 GitHub App、私有仓库、公网 TLS、远程 CI 和外部部署继续 **NOT EXECUTED**。
 
-复审完成后，控制器另执行 `docker compose -p devflow-test -f infra/compose.test.yaml stop postgres`，专用测试库退出 0，恢复本轮开始前的停止状态，保留 `devflow-test_test-postgres` 卷。没有停止其他项目服务。交付代码保存在 `codex/foundation` 工作树，尚未合并或推送；启动与真实 App 配置分别见 [README](../../README.md) 和 [GitHub App 设置](github-app-setup.md)。
+复审完成后，控制器另执行 `docker compose -p devflow-test -f infra/compose.test.yaml stop postgres`，专用测试库退出 0，恢复本轮开始前的停止状态，保留 `devflow-test_test-postgres` 卷。没有停止其他项目服务。当时交付代码保存在 `codex/foundation` 工作树；随后的 main 合并见上节。启动与真实 App 配置分别见 [README](../../README.md) 和 [GitHub App 设置](github-app-setup.md)。
 
 ## 2026-10-01 历史源码、环境与镜像
 

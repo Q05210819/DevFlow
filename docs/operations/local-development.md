@@ -28,6 +28,13 @@
 
 ## 安装与无凭据启动
 
+本机主目录 `D:/python/DevFlow` 已用 UV 建立 `backend/.venv`，便携式 Node 24.21.0 保留在 `.cache/node/node-v24.21.0-win-x64`。若当前终端的 Node 版本不同，可从主目录执行以下命令，仅调整当前 PowerShell 进程：
+
+```powershell
+$env:Path = "$(Resolve-Path '.cache/node/node-v24.21.0-win-x64');$env:Path"
+node --version
+```
+
 安装 UV 0.11.25 与 Node 24.21.0 后：
 
 ```powershell
