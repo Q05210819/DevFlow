@@ -298,9 +298,18 @@ class AuthService:
 
     async def logout(self, raw_token: str) -> None:
         async with self.factory.begin() as db:
+            hashed = token_hash(raw_token)
+            user_id = await db.scalar(
+                select(Session.user_id).where(Session.token_hash == hashed)
+            )
+            if user_id is None:
+                return
+            # Revocation locks User before Session. Resolve without locking, then
+            # take the same order and recheck deletion after any concurrent revoke.
+            await db.scalar(select(User).where(User.id == user_id).with_for_update())
             row = await db.scalar(
                 delete(Session)
-                .where(Session.token_hash == token_hash(raw_token))
+                .where(Session.token_hash == hashed, Session.user_id == user_id)
                 .returning(Session)
             )
             if row is not None:

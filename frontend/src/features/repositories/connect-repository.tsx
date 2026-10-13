@@ -28,7 +28,7 @@ export function ConnectRepository() {
     {candidates.isPending ? <p role="status">正在加载候选仓库…</p> : candidates.isError ? <><p className="banner error" role="alert">{errorMessage(candidates.error)}</p><button onClick={() => void candidates.refetch()}>重新加载候选</button></> : <>
       {!candidates.data.items.length && <p>本页没有可接入的仓库。{candidates.data.next_cursor ? "请继续查看下一页。" : "请确认 GitHub App 安装范围和帐号权限。"}</p>}
       <ul className="repository-grid">{candidates.data.items.map(repository => <li className="repository-card" key={`${repository.installation_id}:${repository.github_repository_id}`}><h3>{repository.full_name}</h3><p>{repository.private ? "私有仓库" : "公开仓库"}</p><button disabled={connect.isPending} aria-label={`接入 ${repository.full_name}`} onClick={() => connect.mutate(repository)}>接入</button></li>)}</ul>
-      <Pagination page={cursors.length + 1} busy={candidates.isFetching || connect.isPending} hasNext={!!candidates.data.next_cursor} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (candidates.data.next_cursor) setCursors([...cursors, candidates.data.next_cursor]); }} />
     </>}
+      <Pagination page={cursors.length + 1} busy={candidates.isFetching || connect.isPending} hasNext={candidates.isSuccess && !!candidates.data.next_cursor} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (candidates.isSuccess && candidates.data.next_cursor) setCursors([...cursors, candidates.data.next_cursor]); }} />
   </section>;
 }

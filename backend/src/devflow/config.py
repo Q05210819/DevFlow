@@ -12,7 +12,9 @@ InstallationId = Annotated[int, Field(strict=True, gt=0)]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        extra="ignore", case_sensitive=False, hide_input_in_errors=True
+    )
 
     app_env: Literal["development", "test", "production"]
     public_base_url: str
@@ -29,8 +31,8 @@ class Settings(BaseSettings):
     credential_encryption_key_file: Path | None = None
     app_signing_key_file: Path | None = None
 
-    oauth_state_ttl_seconds: int = Field(default=600, gt=0)
-    session_ttl_seconds: int = Field(default=28800, gt=0)
+    oauth_state_ttl_seconds: int = Field(default=600, ge=600, le=600)
+    session_ttl_seconds: int = Field(default=28800, ge=28800, le=28800)
     permission_cache_ttl_seconds: int = Field(default=60, ge=0, le=60)
     job_max_attempts: int = Field(default=3, gt=0, le=3)
     job_retry_first_seconds: int = Field(default=10, gt=0)

@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 from typing import Literal
 from uuid import UUID
 
@@ -5,6 +6,10 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from devflow.audit.models import AuditLog
+
+request_id_context: ContextVar[UUID | None] = ContextVar(
+    "audit_request_id", default=None
+)
 
 AuditAction = Literal[
     "auth.login",
@@ -73,7 +78,9 @@ class AuditEntry(BaseModel):
 
 
 async def write_audit(session: AsyncSession, entry: AuditEntry) -> UUID:
-    row = AuditLog(**entry.model_dump())
+    values = entry.model_dump()
+    values["request_id"] = entry.request_id or request_id_context.get()
+    row = AuditLog(**values)
     session.add(row)
     await session.flush()
     return row.id

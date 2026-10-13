@@ -44,13 +44,13 @@ def empty_database(settings_factory):
         autocommit=True,
     ) as conn:
         conn.execute(f'CREATE SCHEMA "{schema}"')
-        scoped = url.update_query_dict({"options": f"-csearch_path={schema}"})
-        settings = settings_factory(
-            database_url=scoped.render_as_string(hide_password=False)
-        )
-        config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-        config.attributes["database_url"] = settings.database_url.get_secret_value()
         try:
+            scoped = url.update_query_dict({"options": f"-csearch_path={schema}"})
+            settings = settings_factory(
+                database_url=scoped.render_as_string(hide_password=False)
+            )
+            config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+            config.attributes["database_url"] = settings.database_url.get_secret_value()
             yield settings, config
         finally:
             conn.execute(f'DROP SCHEMA "{schema}" CASCADE')

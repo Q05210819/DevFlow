@@ -12,6 +12,7 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from devflow.audit.routes import router as audit_router
+from devflow.audit.service import request_id_context
 from devflow.auth.admin import router as admin_router
 from devflow.auth.routes import router as auth_router
 from devflow.auth.service import AuthService
@@ -136,14 +137,19 @@ def create_app(
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):
-        request.state.request_id = uuid4().hex
+        request_id = uuid4()
+        request.state.request_id = request_id.hex
+        token = request_id_context.set(request_id)
         try:
-            response = await call_next(request)
-        # Keep raw exception details out of the ASGI server's error log.
-        except Exception:  # noqa: BLE001
-            response = _error_response(
-                request, "internal_error", 500, "Internal server error"
-            )
+            try:
+                response = await call_next(request)
+            # Keep raw exception details out of the ASGI server's error log.
+            except Exception:  # noqa: BLE001
+                response = _error_response(
+                    request, "internal_error", 500, "Internal server error"
+                )
+        finally:
+            request_id_context.reset(token)
         response.headers["X-Request-ID"] = request.state.request_id
         log_request(request.state.request_id, response.status_code)
         return response

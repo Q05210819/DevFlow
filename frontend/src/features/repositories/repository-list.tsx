@@ -52,7 +52,7 @@ export function RepositoryList() {
     {repositories.isPending ? <p role="status">正在加载仓库…</p> : repositories.isError ? <><p className="banner error" role="alert">{errorMessage(repositories.error)}</p><button onClick={() => void repositories.refetch()}>重新加载</button></> : <>
       {!repositories.data.items.length && <div className="panel empty-state"><h2>{session?.user.role === "admin" ? "尚未接入仓库" : "暂无可访问的仓库"}</h2><p>{session?.user.role === "admin" ? "选择接入仓库以查看可用的 GitHub 仓库。" : "请确认帐号权限，或联系管理员接入仓库。"}</p></div>}
       <ul className="repository-grid" aria-label="已授权仓库">{repositories.data.items.map(repository => <li className="panel repository-card" key={repository.id}><h2>{repository.full_name}</h2><p>{repository.private ? "私有仓库" : "公开仓库"} · 默认分支：{repository.default_branch ?? "未设置"}</p><CheckButton repository={repository} /></li>)}</ul>
-      <Pagination page={cursors.length + 1} busy={repositories.isFetching} hasNext={!!repositories.data.next_cursor} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (repositories.data.next_cursor) setCursors([...cursors, repositories.data.next_cursor]); }} />
     </>}
+      <Pagination page={cursors.length + 1} busy={repositories.isFetching} hasNext={repositories.isSuccess && !!repositories.data.next_cursor} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (repositories.isSuccess && repositories.data.next_cursor) setCursors([...cursors, repositories.data.next_cursor]); }} />
   </main>;
 }

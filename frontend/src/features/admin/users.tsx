@@ -48,7 +48,7 @@ export function Users() {
     </form>
     {(validation || save.error) && <p className="banner error" role="alert">{validation || errorMessage(save.error)}</p>}
     {notice && <p className="banner" role="status">{notice}</p>}
-    {users.isPending ? <p role="status">正在加载成员…</p> : users.isError ? <p className="banner error" role="alert">{errorMessage(users.error)}</p> : <>
+    {users.isPending ? <p role="status">正在加载成员…</p> : users.isError ? <><p className="banner error" role="alert">{errorMessage(users.error)}</p><button disabled={users.isFetching} onClick={() => void users.refetch()}>重新加载</button></> : <>
       <div className="table-wrap" tabIndex={0} role="region" aria-label="成员列表">
         <table><caption className="sr-only">团队成员及权限</caption><thead><tr><th scope="col">成员</th><th scope="col">GitHub ID</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead>
           <tbody>{users.data.items.map((user) => {
@@ -61,7 +61,7 @@ export function Users() {
         </table>
         {!users.data.items.length && <p className="empty-state">暂无成员。</p>}
       </div>
-      <Pagination page={cursors.length + 1} hasNext={!!users.data.next_cursor} busy={users.isFetching || save.isPending} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (users.data.next_cursor) setCursors([...cursors, users.data.next_cursor]); }} />
     </>}
+      <Pagination page={cursors.length + 1} hasNext={users.isSuccess && !!users.data.next_cursor} busy={users.isFetching || save.isPending} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (users.isSuccess && users.data.next_cursor) setCursors([...cursors, users.data.next_cursor]); }} />
   </main>;
 }

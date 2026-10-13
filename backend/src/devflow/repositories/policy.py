@@ -353,5 +353,5 @@ class RepositoryPolicy:
         }
         if len(self._cache) >= 1024:
             self._cache.pop(next(iter(self._cache)))
-        self._cache[verified_key] = started + 60
+        self._cache[verified_key] = started + self.settings.permission_cache_ttl_seconds
         return verified_view
