@@ -664,3 +664,82 @@ async def test_database_rejects_child_fact_without_canonical_parent(job_env):
                     payload={"body": "hello"},
                 )
             )
+
+
+@pytest.mark.parametrize("kind", ["comment", "issue"])
+@pytest.mark.parametrize("boundary", ["helper", "input", "orm"])
+def test_kind_whitelist_revalidates_dto_subclasses(kind, boundary):
+    from devflow.facts.models import Fact
+    from devflow.facts.schemas import (
+        CommentPayload,
+        FactInput,
+        IssuePayload,
+        PullPayload,
+        ReviewPayload,
+        validate_fact_payload,
+    )
+
+    wrong = (
+        ReviewPayload(state="APPROVED", commit_id=HEAD_SHA)
+        if kind == "comment"
+        else PullPayload(
+            title="PR",
+            state="open",
+            issue_id=10,
+            base_sha=BASE_SHA,
+            head_sha=HEAD_SHA,
+            draft=False,
+            merged=False,
+        )
+    )
+    valid = (
+        CommentPayload(body="comment")
+        if kind == "comment"
+        else IssuePayload(title="issue", state="open")
+    )
+    envelope = {
+        "repository_id": uuid4(),
+        "kind": kind,
+        "source_id": 100,
+        "observed_at": NOW,
+        "source_url": "https://github.com/team/repo/issues/1",
+    }
+    if kind == "comment":
+        envelope.update(parent_kind="issue", parent_source_id=10)
+    else:
+        envelope["number"] = 1
+    with pytest.raises(ValidationError):
+        if boundary == "helper":
+            validate_fact_payload(kind, wrong)
+        elif boundary == "input":
+            FactInput(**envelope, payload=wrong)
+        else:
+            Fact(kind=kind, payload=wrong)
+    assert type(validate_fact_payload(kind, valid)) is type(valid)
+    accepted = FactInput(**envelope, payload=valid)
+    assert Fact.from_input(accepted).payload == valid.model_dump(mode="json")
+    assert Fact(kind=kind, payload=valid).payload == valid.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_backfill_range_durably_preserves_stream_selection(job_env):
+    from devflow.sync.models import SyncDemand
+    from devflow.sync.schemas import BackfillRange, SyncDemandInput
+
+    assert BackfillRange(since=NOW, until=NOW).streams == ["issues", "pulls", "actions"]
+    backfill = BackfillRange(since=NOW, until=NOW, streams=["pulls"])
+    demand = SyncDemandInput(
+        repository_id=job_env.repository.id,
+        sequence=1,
+        reason="backfill",
+        backfill=backfill,
+    )
+    async with job_env.factory.begin() as session:
+        session.add(SyncDemand.from_input(demand))
+    async with job_env.factory() as session:
+        stored = await session.get(SyncDemand, (job_env.repository.id, 1))
+        assert stored.backfill["streams"] == ["pulls"]
+        assert BackfillRange.model_validate(stored.backfill) == backfill
+    for streams in ([], ["issues", "issues"], ["unknown"]):
+        with pytest.raises(ValidationError):
+            BackfillRange(since=NOW, until=NOW, streams=streams)

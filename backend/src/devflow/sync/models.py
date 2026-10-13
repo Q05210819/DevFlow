@@ -14,7 +14,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from devflow.db import Base
-from devflow.sync.schemas import SyncCheckpoint, SyncDemandInput, SyncTarget, SyncWindow
+from devflow.sync.schemas import (
+    BackfillRange,
+    SyncCheckpoint,
+    SyncDemandInput,
+    SyncTarget,
+)
 
 
 class RepositorySync(Base):
@@ -130,7 +135,7 @@ class SyncDemand(Base):
         return (
             None
             if value is None
-            else SyncWindow.model_validate(value).model_dump(mode="json")
+            else BackfillRange.model_validate(value).model_dump(mode="json")
         )
 
     @classmethod

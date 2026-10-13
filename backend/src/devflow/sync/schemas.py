@@ -25,6 +25,20 @@ class SyncWindow(StrictDTO):
         return self
 
 
+class BackfillRange(SyncWindow):
+    streams: list[SyncStream] = Field(
+        default_factory=lambda: ["issues", "pulls", "actions"],
+        min_length=1,
+        max_length=3,
+    )
+
+    @model_validator(mode="after")
+    def unique_streams(self):
+        if len(set(self.streams)) != len(self.streams):
+            raise ValueError("Backfill streams must be unique")
+        return self
+
+
 class SyncTarget(StrictDTO):
     kind: Literal["issue", "pull", "ci_run"]
     source_id: GitHubID
@@ -71,7 +85,7 @@ class SyncDemandInput(StrictDTO):
         "registration", "refresh", "webhook", "periodic", "reconcile", "backfill"
     ]
     target: SyncTarget | None = None
-    backfill: SyncWindow | None = None
+    backfill: BackfillRange | None = None
 
     @model_validator(mode="after")
     def consistent_reason(self):

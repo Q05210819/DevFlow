@@ -301,6 +301,8 @@ _ID = TypeAdapter(GitHubID)
 
 
 def validate_fact_payload(kind: FactKind, payload: FactPayload | dict) -> FactPayload:
+    if isinstance(payload, BaseModel):
+        payload = payload.model_dump()
     return _PAYLOADS[kind].model_validate(payload)
 
 
