@@ -1,9 +1,16 @@
 """Small, validated provider DTOs; token representations are always redacted."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+)
 
 PositiveId = Annotated[int, Field(strict=True, gt=0)]
 
@@ -17,6 +24,19 @@ class TokenSet(ProviderModel):
     refresh_token: SecretStr | None
     expires_at: datetime | None
     refresh_expires_at: datetime | None
+
+
+class InstallationToken(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    token: SecretStr
+    expires_at: AwareDatetime
+    permissions: dict[str, str]
+
+    @field_validator("expires_at")
+    @classmethod
+    def utc_expiry(cls, value: datetime) -> datetime:
+        return value.astimezone(UTC)
 
 
 class GitHubUser(ProviderModel):

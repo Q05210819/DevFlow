@@ -15,6 +15,7 @@ from devflow.github.schemas import (
     GitHubInstallationInfo,
     GitHubRepository,
     GitHubUser,
+    InstallationToken,
     TokenSet,
     UpstreamPage,
 )
@@ -22,6 +23,10 @@ from devflow.security import read_secret_file, secret_configuration_error
 
 REST_URL = "https://api.github.com"
 OAUTH_URL = "https://github.com/login/oauth/access_token"
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+READ_PERMISSIONS = frozenset(
+    {"issues", "pull_requests", "actions", "contents", "metadata"}
+)
 
 
 def unavailable() -> AppError:
@@ -97,6 +102,24 @@ def _positive_number(value: int) -> None:
         raise AppError("validation_error", 400, "A positive integer is required")
 
 
+def _installation_scope(
+    installation_id: int, repository_id: int, permissions: dict[str, str]
+) -> None:
+    _positive_number(installation_id)
+    _positive_number(repository_id)
+    if (
+        not isinstance(permissions, dict)
+        or not permissions
+        or any(
+            key not in READ_PERMISSIONS or value != "read"
+            for key, value in permissions.items()
+        )
+    ):
+        raise AppError(
+            "validation_error", 400, "Explicit repository read permissions are required"
+        )
+
+
 def _next_page(response: httpx.Response, page: int) -> int | None:
     link = response.links.get("next", {}).get("url")
     if not link:
@@ -150,9 +173,12 @@ class GitHubClient:
         *,
         token: SecretStr | None = None,
         data: dict | None = None,
+        json_body: dict | None = None,
         params: dict | None = None,
         oauth: bool = False,
         app: bool = False,
+        installation: bool = False,
+        allowed_statuses: tuple[int, ...] = (200,),
     ) -> httpx.Response:
         headers = {
             "Accept": "application/json" if oauth else "application/vnd.github+json"
@@ -161,15 +187,36 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {token.get_secret_value()}"
         try:
             async with asyncio.timeout(10):
-                response = await self._http.request(
+                async with self._http.stream(
                     method,
                     url,
                     headers=headers,
                     data=data,
+                    json=json_body,
                     params=params,
                     follow_redirects=False,
                     timeout=10,
-                )
+                ) as upstream:
+                    body = bytearray()
+                    async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
+                        if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
+                            raise AppError(
+                                "github_response_too_large",
+                                503,
+                                "GitHub response exceeds the size limit",
+                            )
+                        body.extend(chunk)
+                    # aiter_bytes decodes compression; do not decode it a second time.
+                    response = httpx.Response(
+                        upstream.status_code,
+                        headers=[
+                            (key, value)
+                            for key, value in upstream.headers.multi_items()
+                            if key.lower() not in {"content-encoding", "content-length"}
+                        ],
+                        content=bytes(body),
+                        request=upstream.request,
+                    )
         except (httpx.HTTPError, TimeoutError):
             raise unavailable() from None
         _rate_limit(response)
@@ -177,10 +224,24 @@ class GitHubClient:
             raise unavailable()
         if not oauth:
             if response.status_code == 401:
-                raise secret_configuration_error() if app else reauthorize()
+                if app:
+                    raise secret_configuration_error()
+                if installation:
+                    raise AppError(
+                        "github_installation_unavailable",
+                        503,
+                        "GitHub installation access is unavailable",
+                    )
+                raise reauthorize()
+            if installation and response.status_code == 403:
+                raise AppError(
+                    "permission_missing",
+                    403,
+                    "GitHub installation permission is required",
+                )
             if response.status_code in (403, 404):
                 raise not_found()
-            if response.status_code != 200:
+            if response.status_code not in allowed_statuses:
                 raise unavailable()
         return response
 
@@ -318,8 +379,7 @@ class GitHubClient:
         except ValidationError:
             raise unavailable() from None
 
-    async def get_installation(self, installation_id: int) -> GitHubInstallationInfo:
-        _positive_number(installation_id)
+    def _app_token(self) -> SecretStr:
         if not self._settings.github_app_id or not self._settings.github_client_id:
             raise secret_configuration_error()
         private_key = read_secret_file(self._settings.github_private_key_file)
@@ -338,10 +398,58 @@ class GitHubClient:
             )
         except (jwt.PyJWTError, ValueError, TypeError):
             raise secret_configuration_error() from None
+        return token
+
+    async def create_installation_token(
+        self, installation_id: int, repository_id: int, permissions: dict[str, str]
+    ) -> InstallationToken:
+        _installation_scope(installation_id, repository_id, permissions)
+        response = await self._request(
+            "POST",
+            f"{REST_URL}/app/installations/{installation_id}/access_tokens",
+            token=self._app_token(),
+            json_body={"repository_ids": [repository_id], "permissions": permissions},
+            app=True,
+            installation=True,
+            allowed_statuses=(201,),
+        )
+        payload = _json(response)
+        try:
+            result = InstallationToken.model_validate(
+                {key: payload[key] for key in ("token", "expires_at", "permissions")}
+            )
+            if (
+                not result.token.get_secret_value()
+                or result.expires_at <= datetime.now(UTC)
+                or any(
+                    result.permissions.get(key) != value
+                    for key, value in permissions.items()
+                )
+                or any(
+                    key not in {*permissions, "metadata"} or value != "read"
+                    for key, value in result.permissions.items()
+                )
+            ):
+                raise ValueError
+            repositories = payload.get("repositories")
+            if repositories is not None and (
+                not isinstance(repositories, list)
+                or len(repositories) != 1
+                or not isinstance(repositories[0], dict)
+                or type(repositories[0].get("id")) is not int
+                or repositories[0]["id"] != repository_id
+            ):
+                raise ValueError
+            return result
+        except (KeyError, ValueError, TypeError, ValidationError):
+            raise unavailable() from None
+
+    async def get_installation(self, installation_id: int) -> GitHubInstallationInfo:
+        _positive_number(installation_id)
         response = await self._request(
             "GET",
             f"{REST_URL}/app/installations/{installation_id}",
-            token=token,
+            token=self._app_token(),
             app=True,
         )
         item = _installation(_json(response))
