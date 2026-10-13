@@ -54,9 +54,9 @@ async def pending_denial(env, *, phase, status):
 
     env.before_response = remote_barrier
 
-    async def probe(job_id):
+    async def probe(lease):
         return await run_probe(
-            job_id, env.factory, env.policy, env.github, env.credentials
+            lease.job_id, env.factory, env.policy, env.github, env.credentials
         )
 
     # Delayed denial resumes before a heartbeat can detect the stolen lease.

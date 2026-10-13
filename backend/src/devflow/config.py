@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     job_heartbeat_seconds: int = Field(default=10, gt=0)
     job_attempt_timeout_seconds: int = Field(default=120, gt=0)
     worker_concurrency: int = Field(default=4, gt=0)
+    sync_concurrency: int = Field(default=2, ge=1, le=10)
+    sync_unit_requests: int = Field(default=5, ge=1, le=100)
+    sync_unit_seconds: int = Field(default=120, ge=10, le=120)
+    sync_round_requests: int = Field(default=10000, ge=1, le=1000000)
+    sync_round_seconds: int = Field(default=86400, ge=10, le=604800)
+    sync_interval_seconds: int = Field(default=900, ge=1)
+    sync_reconcile_seconds: int = Field(default=86400, ge=1)
+    sync_history_days: int = Field(default=90, ge=1, le=365)
+    sync_actions_days: int = Field(default=30, ge=1, le=365)
+    sync_overlap_seconds: int = Field(default=300, ge=0, le=86400)
 
     @field_validator("github_allowed_installation_ids", mode="before")
     @classmethod

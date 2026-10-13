@@ -47,10 +47,39 @@ async def run_worker(
             lease_seconds=settings.job_lease_seconds,
             retry_first_seconds=settings.job_retry_first_seconds,
             retry_second_seconds=settings.job_retry_second_seconds,
+            settings=settings,
         )
 
-        async def probe(job_id):
-            return await run_probe(job_id, factory, policy, github, credentials)
+        async def probe(lease):
+            from sqlalchemy import select
+
+            from devflow.github.data import GitHubDataClient
+            from devflow.jobs.models import Job
+            from devflow.sync.handlers import run_sync
+            from devflow.sync.service import SyncService
+
+            async with factory() as session:
+                kind = await session.scalar(
+                    select(Job.kind).where(Job.id == lease.job_id)
+                )
+            if kind == "repository.access_probe":
+                return await run_probe(
+                    lease.job_id, factory, policy, github, credentials
+                )
+            if kind == "repository.sync":
+                return await run_sync(
+                    lease,
+                    SyncService(factory, settings),
+                    GitHubDataClient(github),
+                    tokens,
+                )
+            raise AppError("service_unavailable", 503, "Job handler unavailable")
+
+        from devflow.github.installations import InstallationTokens
+        from devflow.sync.scheduler import SyncScheduler
+
+        tokens = InstallationTokens(github)
+        scheduler = SyncScheduler(factory, settings)
 
         await _serve(
             queue,
@@ -59,6 +88,7 @@ async def run_worker(
             concurrency=settings.worker_concurrency,
             heartbeat_seconds=settings.job_heartbeat_seconds,
             attempt_seconds=settings.job_attempt_timeout_seconds,
+            scheduler=scheduler,
         )
     finally:
         try:
@@ -77,6 +107,7 @@ async def _serve(
     shutdown_seconds=30,
     heartbeat_seconds=None,
     attempt_seconds=None,
+    scheduler=None,
 ):
     owner = uuid4()
     active = set()
@@ -85,6 +116,8 @@ async def _serve(
         while not stop.is_set():
             try:
                 await queue.recover_expired()
+                if scheduler is not None:
+                    await scheduler.tick()
                 while len(active) < concurrency and not stop.is_set():
                     lease = await queue.claim(owner)
                     if lease is None or stop.is_set():
@@ -141,7 +174,7 @@ async def _execute(
 
     async def attempt():
         async with asyncio.timeout(attempt_seconds):
-            return await probe(lease.job_id)
+            return await probe(lease)
 
     work = asyncio.create_task(attempt())
 
@@ -182,7 +215,7 @@ async def _execute(
             if not lost:
                 await queue.fail(lease, "internal_error", False)
         else:
-            if not lost:
+            if not lost and result is not None:
                 await queue.complete(lease, result)
     finally:
         work.cancel()

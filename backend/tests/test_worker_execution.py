@@ -139,15 +139,15 @@ async def test_worker_limits_concurrency_and_stops_claiming_before_drain():
     four_running = asyncio.Event()
     running = set()
 
-    async def probe(job_id):
-        running.add(job_id)
+    async def probe(lease):
+        running.add(lease.job_id)
         if len(running) == 4:
             four_running.set()
         try:
             await release.wait()
             return "result"
         finally:
-            running.remove(job_id)
+            running.remove(lease.job_id)
 
     task = asyncio.create_task(worker._serve(queue, probe, stop, concurrency=4))
     try:
@@ -236,3 +236,17 @@ async def test_heartbeat_database_error_cancels_without_exposing_exception(caplo
     )
     assert "password" not in caplog.text
     assert "user-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handler_receives_full_lease_and_can_complete_atomically():
+    from devflow import worker
+
+    queue = RecordingQueue()
+    owned = lease()
+
+    async def handler(received):
+        assert received is owned
+
+    await worker._execute(queue, owned, handler)
+    assert queue.writes == []

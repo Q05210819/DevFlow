@@ -76,6 +76,9 @@ class SyncCheckpoint(StrictDTO):
     captured_sha: CapturedSHA | None = None
     recaptures: int = Field(default=0, strict=True, ge=0, le=3)
     captured_sequence: int = Field(default=0, strict=True, ge=0)
+    target_started_at: UTCDateTime | None = None
+    known_after_id: int = Field(default=0, strict=True, ge=0)
+    known_complete: bool = False
 
 
 class SyncDemandInput(StrictDTO):

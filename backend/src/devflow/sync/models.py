@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from devflow.db import Base
+from devflow.health.models import HealthSnapshot
 from devflow.sync.schemas import (
     BackfillRange,
     SyncCheckpoint,
@@ -59,7 +60,7 @@ class RepositorySync(Base):
         BigInteger, server_default="0"
     )
     current_health_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("health_snapshots.id")
+        ForeignKey(HealthSnapshot.id)
     )
 
 

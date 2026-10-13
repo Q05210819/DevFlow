@@ -15,6 +15,7 @@ ERROR_CODES = frozenset(
         "github_response_too_large",
         "github_installation_unavailable",
         "permission_missing",
+        "budget_exhausted",
         "reauth_required",
         "attempt_timeout",
         "invalid_cursor",
