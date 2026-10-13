@@ -10,7 +10,7 @@
 
 **Spec:** [第一阶段平台基础设计](../specs/2026-09-30-devflow-foundation-design.md)；上位约束见 [平台架构设计](../specs/2026-09-30-devflow-platform-design.md)。两份规格已经用户确认。
 
-**Status:** 用户已确认采用 A（Subagent-driven）执行；实施进行中。复选框与执行记录反映实际进度，未勾选步骤不表示已完成或已通过测试。
+**Status:** 2026-10-13，按用户确认的 A（Subagent-driven）完成一期本地实现、验证与独立最终复审。405 项后端测试、37 项浏览器测试及受影响镜像验证通过；真实外部验收仍未执行，见 [验收记录](../../operations/foundation-acceptance.md)。复选框保留这一边界，不声明整个平台或真实部署已完成。
 
 ## Global Constraints
 
@@ -234,7 +234,7 @@ github/schemas.py 同时定义 `GitHubUser(id: int, login: str, avatar_url: str 
 - [x] **3. 运行完整离线与容器验证。** 执行下方命令组；CI 使用隔离 PostgreSQL 服务、合成凭据和 mock GitHub，不依赖真实秘密。配置任务故意遗漏秘密时应启动失败；数据库断开或 schema 不匹配时 readiness 为 503。检查镜像层/构建上下文/日志无植入秘密，扫描 `.gitignore`、`.dockerignore` 和 build args 防止把真实 `.env` 打包。
 - [x] **4a. 本地恢复演练完成。** 2026-10-01 已完成独立 Compose 空库启动、API 重启、非空备份及独立恢复，核对计数、凭据解密和授权序列；Worker 强杀/租约回收由真实 PostgreSQL 子进程测试覆盖，Compose 另验证 Linux Worker 入口及正常停止。2026-10-13 修复后重建受影响镜像并更新本地运行证据；未变更 schema/crypto，恢复证据保持原日期，详见 [验收记录](../../operations/foundation-acceptance.md)。
 - [ ] **4b. 真实外部验收未执行。** 缺少真实 GitHub App、域名与私有仓库；真实登录/检查/webhook 撤权、公网 TLS、远程 CI 和外部部署仍为 NOT EXECUTED，不据本地检查标记全部真实验收通过。
-- [ ] **5. 实现已完成，最终限域复审待控制器结论。** 部署与联调实现及全阶段审查修复已提交；2026-10-13 全分支审查的 I1–I4/M1–M4 已在合并修复波次处理并记录实际验证。控制器完成最终限域复审后更新本项；不包含发布到未知外部服务器。
+- [x] **5. 实现与最终独立复审完成。** 部署与联调实现及全阶段审查修复已提交；2026-10-13 独立限域复审核对 `18eba99..70dd30c`，I1–I4/M1–M4 全部解决，未发现新增回归。实际验证见验收记录；代码保留在 `codex/foundation`，未执行分支合并、推送或外部部署。
 
 ### 全阶段验证命令
 

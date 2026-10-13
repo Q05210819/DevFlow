@@ -4,7 +4,7 @@
 
 ## 2026-10-13 最终审查修复与新验证
 
-本节是新证据；后续各节保留 **2026-10-01 历史记录**。最终全分支审查的 I1–I4/M1–M4 已处理，实施提交为 `cfe00094a6c55abe38ae97420380817f9cb350e1`，父提交为 `18eba997cd81e35e529230533653ef587f42da24`。控制器最终限域复审仍待结论，不能把本节解释为真实外部验收通过。
+本节是新证据；后续各节保留 **2026-10-01 历史记录**。最终全分支审查的 I1–I4/M1–M4 已处理，实施提交为 `cfe00094a6c55abe38ae97420380817f9cb350e1`，父提交为 `18eba997cd81e35e529230533653ef587f42da24`。2026-10-13，独立限域复审完成，审查范围为 `18eba99..70dd30c`：8 项发现全部解决，未发现修复引入的新问题，本地实现审查门槛关闭。其后的收尾提交仅更新文档状态，产品源码仍为上述已验证版本。此结论不代表真实外部验收通过。
 
 本次修复启动校验输入脱敏、注销 User→Session 锁序、服务端请求 UUID 与 HTTP 审计关联、终态失败中文说明、失败分页恢复、终态 REST 尝试次数优先级、测试 schema 异常清理和真实生效的 TTL 配置。认证期限固定 600/28800 秒，权限正缓存为 0–60 秒（默认 60，0 禁止复用）；详见 [本地开发](local-development.md) 和决策 40–41。
 
@@ -37,6 +37,8 @@
 新 backend/frontend 合并导出归档的 **31 个成员/层** 与 79 个上下文文件扫描 **8 个合成模式，0 匹配**；3 份新构建/运行日志扫描 **10 个模式，0 匹配**。日志和有限样本扫描不代表穷尽任意秘密。详细证据在 `.cache/final-fix/{image-build.log,context-build.log,image-scan.log,runtime-start.log,runtime-check.log,runtime-summary.json,runtime-services.log}`，探测脚本为同目录 `runtime.py`、`scan.py`。
 
 最后只执行本项目 `stop`，六服务均 exited，Worker/migrate/Postgres/gateway 退出 0，API/frontend 停止后的记录为 143；保留 postgres-data、caddy-data、caddy-config 三卷。最终状态见 `.cache/final-fix/runtime-final-state.jsonl` 和 `runtime-stop.log`；未停止专用测试数据库或其他项目。没有 schema/加密变更，**备份恢复演练未重复**，下方非空恢复和旧镜像扫描保持 10 月 1 日历史归属。真实 GitHub App、私有仓库、公网 TLS、远程 CI 和外部部署继续 **NOT EXECUTED**。
+
+复审完成后，控制器另执行 `docker compose -p devflow-test -f infra/compose.test.yaml stop postgres`，专用测试库退出 0，恢复本轮开始前的停止状态，保留 `devflow-test_test-postgres` 卷。没有停止其他项目服务。交付代码保存在 `codex/foundation` 工作树，尚未合并或推送；启动与真实 App 配置分别见 [README](../../README.md) 和 [GitHub App 设置](github-app-setup.md)。
 
 ## 2026-10-01 历史源码、环境与镜像
 
