@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -26,7 +27,23 @@ class Job(Base):
         UniqueConstraint(
             "requested_by", "kind", "idempotency_key", name="uq_jobs_creator_kind_key"
         ),
-        CheckConstraint("kind = 'repository.access_probe'", name="valid_kind"),
+        CheckConstraint(
+            "kind IN ('repository.access_probe', 'repository.sync', 'repository.health')",
+            name="valid_kind",
+        ),
+        CheckConstraint(
+            "(kind = 'repository.access_probe' AND requested_by IS NOT NULL) OR (kind IN ('repository.sync', 'repository.health') AND requested_by IS NULL)",
+            name="valid_creator",
+        ),
+        CheckConstraint("request_count >= 0", name="request_count"),
+        Index(
+            "uq_jobs_system_repository_kind_key",
+            "repository_id",
+            "kind",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("requested_by IS NULL"),
+        ),
         CheckConstraint(
             "status IN ('queued', 'running', 'retry_wait', 'succeeded', 'failed')",
             name="valid_status",
@@ -50,13 +67,17 @@ class Job(Base):
     repository_id: Mapped[UUID] = mapped_column(
         ForeignKey("repositories.id"), index=True
     )
-    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    requested_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"), index=True
+    )
     input: Mapped[dict] = mapped_column(JSONB)
     input_hash: Mapped[str] = mapped_column(String(64))
     idempotency_key: Mapped[str] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(16), server_default="queued")
     attempt: Mapped[int] = mapped_column(Integer, server_default="0")
     max_attempts: Mapped[int] = mapped_column(Integer, server_default="3")
+    request_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    attempt_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     available_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp()
     )

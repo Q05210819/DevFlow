@@ -28,6 +28,9 @@ AuditAction = Literal[
     "job.retried",
     "job.succeeded",
     "job.failed",
+    "sync.requested",
+    "backfill.requested",
+    "health.requested",
 ]
 ReasonCode = Literal[
     "unauthenticated",
@@ -51,6 +54,13 @@ ReasonCode = Literal[
     "permission_revoked",
     "lease_expired",
     "internal_error",
+    "permission_missing",
+    "github_installation_unavailable",
+    "github_response_too_large",
+    "version_changed",
+    "version_unavailable",
+    "source_limit",
+    "budget_exhausted",
 ]
 
 

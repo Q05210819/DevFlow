@@ -8,9 +8,12 @@ from sqlalchemy import create_engine, pool
 from devflow.audit import models as audit_models  # noqa: F401
 from devflow.auth import models as auth_models  # noqa: F401
 from devflow.db import Base
+from devflow.facts import models as fact_models  # noqa: F401
 from devflow.github import models as github_models  # noqa: F401
+from devflow.health import models as health_models  # noqa: F401
 from devflow.jobs import models as job_models  # noqa: F401
 from devflow.repositories import models as repository_models  # noqa: F401
+from devflow.sync import models as sync_models  # noqa: F401
 
 config = context.config
 url = config.attributes.get("database_url") or os.environ.get("DATABASE_URL")

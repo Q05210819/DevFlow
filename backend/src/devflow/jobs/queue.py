@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from devflow.audit.service import AuditEntry, write_audit
 from devflow.auth.models import User
 from devflow.jobs.models import Job
-from devflow.jobs.schemas import JobErrorCode, ProbeResult
+from devflow.jobs.schemas import HealthResult, JobErrorCode, ProbeResult, SyncResult
 from devflow.jobs.service import append_event
 from devflow.logging import logger
 
@@ -111,13 +111,21 @@ class Queue:
         _metric("queue.heartbeat", lease)
         return True
 
-    async def complete(self, lease: Lease, result: ProbeResult) -> bool:
+    async def complete(
+        self, lease: Lease, result: ProbeResult | SyncResult | HealthResult
+    ) -> bool:
         async with self._transaction() as session:
             job, now = await self._owned(session, lease)
             if job is None:
                 return False
+            schema = {
+                "repository.access_probe": ProbeResult,
+                "repository.sync": SyncResult,
+                "repository.health": HealthResult,
+            }[job.kind]
+            validated = schema.model_validate(result)
             job.status = "succeeded"
-            job.result = ProbeResult.model_validate(result).model_dump(mode="json")
+            job.result = validated.model_dump(mode="json")
             job.error_code = None
             job.lease_owner = None
             job.lease_expires_at = None
@@ -138,20 +146,24 @@ class Queue:
         except ValidationError:
             code, retryable = "internal_error", False
         async with self._transaction() as session:
-            denial = code in {"resource_not_found", "permission_revoked"}
+            denial = code in {
+                "resource_not_found",
+                "permission_revoked",
+                "permission_missing",
+                "github_installation_unavailable",
+            }
             if denial:
                 # Read the immutable creator without taking Job's lock, then
                 # acquire the actor FK lock in the established User → Job order.
                 creator = await session.scalar(
                     select(Job.requested_by).where(Job.id == lease.job_id)
                 )
-                if creator is None:
-                    return False
-                await session.execute(
-                    select(User.id)
-                    .where(User.id == creator)
-                    .with_for_update(read=True, key_share=True)
-                )
+                if creator is not None:
+                    await session.execute(
+                        select(User.id)
+                        .where(User.id == creator)
+                        .with_for_update(read=True, key_share=True)
+                    )
             job, now = await self._owned(session, lease)
             if job is None:
                 return False

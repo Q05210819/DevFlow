@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from devflow.facts.schemas import StrictDTO
+
 JobStatus = Literal["queued", "running", "retry_wait", "succeeded", "failed"]
 JobErrorCode = Literal[
     "unauthenticated",
@@ -17,6 +19,13 @@ JobErrorCode = Literal[
     "permission_revoked",
     "lease_expired",
     "internal_error",
+    "permission_missing",
+    "github_installation_unavailable",
+    "github_response_too_large",
+    "version_changed",
+    "version_unavailable",
+    "source_limit",
+    "budget_exhausted",
 ]
 IdempotencyKey = Annotated[str, Field(strict=True, pattern=r"^[!-~]{1,128}$")]
 
@@ -28,6 +37,17 @@ class ProbeResult(BaseModel):
     private: bool
     default_branch: str | None
     checked_at: datetime
+
+
+class SyncResult(StrictDTO):
+    repository_id: UUID
+    generation: int = Field(strict=True, ge=1)
+    continued: bool = Field(strict=True)
+
+
+class HealthResult(StrictDTO):
+    snapshot_id: UUID
+    generation: int = Field(strict=True, ge=1)
 
 
 class EventPayload(BaseModel):
