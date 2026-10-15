@@ -320,7 +320,9 @@ async def test_insufficient_http_time_continues_without_request(sync_env):
     lease, work = await start(env)
     async with env.factory.begin() as db:
         job = await db.get(Job, lease.job_id)
-        job.attempt_started_at = datetime.now(UTC) - timedelta(seconds=111)
+        job.attempt_started_at = await db.scalar(
+            select(func.clock_timestamp() - text("interval '111 seconds'"))
+        )
     with pytest.raises(UnitComplete):
         await env.sync.reserve_request(lease, work)
     assert await env.sync.continue_job(lease, work)
@@ -919,3 +921,54 @@ async def test_selected_round_preserves_excluded_stream_evidence(
         state = await db.get(RepositorySync, env.repository.id)
         assert state.status == "completed" and state.active_job_id is None
         assert state.processed_sequence == state.requested_sequence == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_partial_stream_survives_other_stream_failure(sync_env):
+    env = sync_env
+    lease, work = await start(env)
+    assert await env.sync.commit_page(
+        lease,
+        work,
+        facts=[],
+        collections=[],
+        checkpoint=work.cursor,
+        complete=True,
+        outcome="partial",
+        reason="source_limit",
+    )
+    async with env.factory() as db:
+        c = await db.get(SyncCursor, (env.repository.id, "issues"))
+        assert c.completed_watermark is None and c.last_success_at is None
+    work = await env.sync.snapshot(lease)
+    assert work.cursor.stream == "pulls"
+    assert await env.queue.fail(lease, "github_unavailable", retryable=True)
+    async with env.factory() as db:
+        c = await db.get(SyncCursor, (env.repository.id, "issues"))
+        assert (c.status, c.error_code, c.checkpoint["stage"]) == (
+            "partial",
+            "source_limit",
+            "done",
+        )
+
+
+@pytest.mark.asyncio
+async def test_partial_round_does_not_claim_daily_reconciliation(sync_env):
+    env = sync_env
+    lease, work = await start(env)
+    for index in range(3):
+        work = await env.sync.snapshot(lease)
+        assert await env.sync.commit_page(
+            lease,
+            work,
+            facts=[],
+            collections=[],
+            checkpoint=work.cursor,
+            complete=True,
+            outcome="partial" if index == 0 else "complete",
+            reason="source_limit" if index == 0 else None,
+        )
+    async with env.factory() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        assert state.last_reconciled_at is None
+        assert state.processed_sequence == 1 and state.active_job_id is None

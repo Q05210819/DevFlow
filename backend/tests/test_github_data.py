@@ -410,3 +410,16 @@ async def test_json_recursion_failure_is_controlled(settings_factory):
                 TOKEN, "team/private", "issues"
             )
     assert caught.value.code == "github_unavailable"
+
+
+async def test_response_page_cannot_exceed_requested_size(settings_factory):
+    from devflow.github.data import GitHubDataClient
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[{}] * 101))
+    ) as http:
+        with pytest.raises(AppError) as error:
+            await GitHubDataClient(GitHubClient(http, settings_factory())).read(
+                TOKEN, "team/private", "issues"
+            )
+    assert error.value.code == "github_unavailable"

@@ -99,7 +99,13 @@ class GitHubUser(StrictDTO):
     login: str | None = None
 
 
-class IssuePayload(StrictDTO):
+class NormalizedPayload(StrictDTO):
+    normalization_reasons: list[
+        Literal["unknown_value", "content_truncated", "field_unavailable"]
+    ] = Field(default_factory=list, max_length=3)
+
+
+class IssuePayload(NormalizedPayload):
     title: str
     body: str | None = None
     state: Literal["open", "closed", "unknown"]
@@ -129,7 +135,7 @@ class PullPayload(IssuePayload):
     merged_at: UTCDateTime | None = None
 
 
-class CommentPayload(StrictDTO):
+class CommentPayload(NormalizedPayload):
     body: str | None = None
     author: GitHubUser | None = None
     created_at: UTCDateTime | None = None
@@ -170,7 +176,7 @@ class ReviewCommentPayload(CommentPayload):
         return _known_or_unknown(value, {"LEFT", "RIGHT"})
 
 
-class PRFilePayload(StrictDTO):
+class PRFilePayload(NormalizedPayload):
     base_sha: SHA
     head_sha: SHA
     filename: str = Field(min_length=1)
@@ -215,7 +221,7 @@ class PRFilePayload(StrictDTO):
         return self
 
 
-class CIPayload(StrictDTO):
+class CIPayload(NormalizedPayload):
     status: CIStatus
     conclusion: CIConclusion | None = None
 

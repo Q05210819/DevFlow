@@ -1,10 +1,11 @@
 """One serial stream of bounded HTTP steps; collectors never own transactions."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
 
 from devflow.errors import AppError
-from devflow.facts.schemas import CollectionInput, FactInput
-from devflow.sync.schemas import SyncCheckpoint
+from devflow.facts.schemas import CollectionInput, CollectionReason, FactInput
+from devflow.sync.schemas import SyncCheckpoint, SyncTarget
 from devflow.sync.service import LeaseLost, UnitComplete
 
 
@@ -14,11 +15,16 @@ class CollectedPage:
     collections: list[CollectionInput]
     checkpoint: SyncCheckpoint
     complete: bool
+    outcome: Literal["complete", "partial", "permission_missing"] = "complete"
+    reason: CollectionReason | None = None
+    unavailable: list[SyncTarget] = field(default_factory=list)
 
 
 async def run_sync(lease, service, client, tokens, *, collector=None):
     if collector is None:
-        raise AppError("service_unavailable", 503, "Repository collector unavailable")
+        from devflow.sync.collectors import collect_step
+
+        collector = collect_step
     try:
         for _ in range(100):
             work = await service.snapshot(lease)
@@ -48,6 +54,19 @@ async def run_sync(lease, service, client, tokens, *, collector=None):
                     before_request=reserve,
                 )
                 page = await collector(work, BudgetClient(), token)
+            except AppError as error:
+                if error.code != "permission_missing":
+                    raise
+                page = CollectedPage(
+                    [],
+                    [],
+                    work.cursor.model_copy(
+                        update={"stage": "done", "gap_reason": "permission_missing"}
+                    ),
+                    True,
+                    "permission_missing",
+                    "permission_missing",
+                )
             except UnitComplete:
                 await service.continue_job(lease, work)
                 return
@@ -58,6 +77,9 @@ async def run_sync(lease, service, client, tokens, *, collector=None):
                 collections=page.collections,
                 checkpoint=page.checkpoint,
                 complete=page.complete,
+                outcome=page.outcome,
+                reason=page.reason,
+                unavailable=page.unavailable,
             ):
                 return
             if page.checkpoint == work.cursor and not page.complete:

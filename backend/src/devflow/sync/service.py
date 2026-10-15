@@ -184,7 +184,9 @@ class SyncService:
                     c
                     for stream in ("issues", "pulls", "actions")
                     for c in cursors
-                    if c.stream == stream and c.status != "complete"
+                    if c.stream == stream
+                    and c.checkpoint["stage"] != "done"
+                    and c.status != "complete"
                 ),
                 None,
             )
@@ -268,11 +270,34 @@ class SyncService:
             job.request_count += 1
 
     async def commit_page(
-        self, lease, work, *, facts, collections, checkpoint, complete
+        self,
+        lease,
+        work,
+        *,
+        facts,
+        collections,
+        checkpoint,
+        complete,
+        outcome="complete",
+        reason=None,
+        unavailable=(),
     ) -> bool:
+        if outcome not in {"complete", "partial", "permission_missing"} or (
+            (outcome == "complete") != (reason is None)
+        ):
+            raise ValueError("Stream outcome requires a matching coverage reason")
         checkpoint = SyncCheckpoint.model_validate(checkpoint)
+        if complete:
+            checkpoint = checkpoint.model_copy(update={"stage": "done"})
         facts = [FactInput.model_validate(f) for f in facts]
         collections = [CollectionInput.model_validate(c) for c in collections]
+        unavailable = [SyncTarget.model_validate(t) for t in unavailable]
+        if unavailable and (
+            work.cursor.stage != "missing_verify" or unavailable != [work.cursor.target]
+        ):
+            raise ValueError(
+                "Unavailable target requires independently confirmed proof"
+            )
         if (
             checkpoint.stream != work.cursor.stream
             or checkpoint.captured_sequence != work.captured_sequence
@@ -300,6 +325,20 @@ class SyncService:
             ):
                 # A collector may use work.observed_at to start the target; never accept provider time.
                 raise ValueError("Target fence requires database observation time")
+            for target in unavailable:
+                condition = [
+                    Fact.repository_id == repository.id,
+                    Fact.kind == target.kind,
+                ]
+                if target.source_id is not None:
+                    condition.append(Fact.source_id == target.source_id)
+                else:
+                    condition.append(Fact.number == target.number)
+                await db.execute(
+                    update(Fact)
+                    .where(*condition)
+                    .values(unavailable=True, observed_at=now)
+                )
             for fact in facts:
                 values = fact.model_dump()
                 values["payload"] = fact.payload.model_dump(mode="json")
@@ -334,9 +373,9 @@ class SyncService:
                         db, collection, work.cursor.target_started_at
                     )
             cursor.checkpoint = checkpoint.model_dump(mode="json")
-            cursor.status = "complete" if complete else "running"
-            cursor.error_code = None
-            if complete:
+            cursor.status = outcome if complete else "running"
+            cursor.error_code = reason if complete else None
+            if complete and outcome == "complete":
                 cursor.last_success_at = now
                 if checkpoint.window and checkpoint.mode != "targeted":
                     window = checkpoint.window
@@ -363,6 +402,7 @@ class SyncService:
                         if cursor.completed_watermark
                         else checkpoint.window.until
                     )
+            if complete:
                 await db.flush()
                 unfinished = await db.scalar(
                     select(func.count())
@@ -370,7 +410,7 @@ class SyncService:
                     .where(
                         SyncCursor.repository_id == repository.id,
                         SyncCursor.stream.in_(job.input["streams"]),
-                        SyncCursor.status != "complete",
+                        SyncCursor.checkpoint["stage"].astext != "done",
                     )
                 )
                 if not unfinished:
@@ -387,14 +427,17 @@ class SyncService:
                     state.next_due_at = now + timedelta(
                         seconds=self.settings.sync_interval_seconds
                     )
-                    if any(
-                        c.checkpoint["mode"] in {"initial", "reconcile"}
-                        for c in await db.scalars(
+                    completed_cursors = list(
+                        await db.scalars(
                             select(SyncCursor).where(
                                 SyncCursor.repository_id == repository.id,
                                 SyncCursor.stream.in_(job.input["streams"]),
                             )
                         )
+                    )
+                    if all(c.status == "complete" for c in completed_cursors) and any(
+                        c.checkpoint["mode"] in {"initial", "reconcile"}
+                        for c in completed_cursors
                     ):
                         state.last_reconciled_at = now
                     await enqueue(db, state, installation, repository)

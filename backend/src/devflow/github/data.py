@@ -197,8 +197,10 @@ class GitHubDataClient:
             total_count = payload.get("total_count")
             if type(total_count) is not int or total_count < 0:
                 raise unavailable()
-        if not isinstance(items, list) or any(
-            not isinstance(item, dict) for item in items
+        if (
+            not isinstance(items, list)
+            or len(items) > 100
+            or any(not isinstance(item, dict) for item in items)
         ):
             raise unavailable()
         return DataResponse(

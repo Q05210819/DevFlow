@@ -1,9 +1,16 @@
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
 
-from devflow.facts.schemas import SHA, GitHubID, StrictDTO, UTCDateTime
+from devflow.facts.schemas import (
+    SHA,
+    CollectionKind,
+    CollectionReason,
+    GitHubID,
+    StrictDTO,
+    UTCDateTime,
+)
 
 SyncStream = Literal["issues", "pulls", "actions"]
 SyncStatus = Literal[
@@ -41,14 +48,30 @@ class BackfillRange(SyncWindow):
 
 class SyncTarget(StrictDTO):
     kind: Literal["issue", "pull", "ci_run"]
-    source_id: GitHubID
+    source_id: GitHubID | None = None
     number: GitHubID | None = None
     attempt: GitHubID | None = None
+
+    @model_validator(mode="after")
+    def identity(self):
+        if self.kind in {"issue", "pull"}:
+            if self.number is None or self.attempt is not None:
+                raise ValueError("Issue and pull targets require number and no attempt")
+        elif self.number is not None:
+            raise ValueError("Run target cannot carry an issue number")
+        if self.source_id is None and self.kind != "pull":
+            raise ValueError("Canonical source ID is required")
+        return self
 
 
 class CapturedSHA(StrictDTO):
     base: SHA
     head: SHA
+
+
+class PendingCollection(StrictDTO):
+    collection: CollectionKind
+    reason: CollectionReason | None = None
 
 
 class SyncCheckpoint(StrictDTO):
@@ -71,14 +94,37 @@ class SyncCheckpoint(StrictDTO):
         "attempts",
         "jobs",
         "done",
+        "issue_identity",
+        "repository_proof",
+        "permission_proof",
+        "missing_verify",
     ] = "enumerate"
+    missing_stage: Literal["detail", "issue_identity"] | None = None
     child_page: int = Field(default=1, strict=True, ge=1)
     captured_sha: CapturedSHA | None = None
     recaptures: int = Field(default=0, strict=True, ge=0, le=3)
+    recapture_counts: dict[
+        Annotated[str, Field(pattern=r"^[1-9][0-9]*$")],
+        Annotated[int, Field(strict=True, ge=1, le=3)],
+    ] = Field(default_factory=dict, max_length=1000)
     captured_sequence: int = Field(default=0, strict=True, ge=0)
     target_started_at: UTCDateTime | None = None
     known_after_id: int = Field(default=0, strict=True, ge=0)
     known_complete: bool = False
+    phase: Literal["open", "window", "known"] = "open"
+    enumeration_done: bool = False
+    issue_id: GitHubID | None = None
+    latest_attempt: GitHubID | None = None
+    current_attempt: GitHubID | None = None
+    run_head: SHA | None = None
+    file_count: int = Field(default=0, strict=True, ge=0, le=3000)
+    pending_collections: list[PendingCollection] = Field(
+        default_factory=list, max_length=4
+    )
+    active_window: SyncWindow | None = None
+    pending_windows: list[SyncWindow] = Field(default_factory=list, max_length=32)
+    unresolved_windows: list[SyncWindow] = Field(default_factory=list, max_length=100)
+    gap_reason: CollectionReason | None = None
 
 
 class SyncDemandInput(StrictDTO):

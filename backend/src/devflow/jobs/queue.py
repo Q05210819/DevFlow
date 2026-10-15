@@ -351,6 +351,7 @@ class Queue:
                 SyncCursor.repository_id == job.repository_id,
                 SyncCursor.stream.in_(job.input.get("streams", ())),
                 SyncCursor.status != "complete",
+                SyncCursor.checkpoint["stage"].astext != "done",
             )
         )
         for cursor in cursors:
