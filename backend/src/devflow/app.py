@@ -21,10 +21,12 @@ from devflow.auth.service import AuthService
 from devflow.config import Settings
 from devflow.db import create_session_factory, schema_is_current
 from devflow.errors import AppError
+from devflow.facts.routes import router as facts_router
 from devflow.github.client import GitHubClient
 from devflow.github.credentials import CredentialService
 from devflow.github.webhooks import WebhookService
 from devflow.github.webhooks import router as webhook_router
+from devflow.health.routes import router as health_router
 from devflow.jobs.routes import router as job_router
 from devflow.jobs.service import JobService
 from devflow.logging import configure_logging, log_request
@@ -134,6 +136,8 @@ def create_app(
     app.include_router(webhook_router)
     app.include_router(repository_router)
     app.include_router(sync_router)
+    app.include_router(facts_router)
+    app.include_router(health_router)
     app.include_router(job_router)
     app.include_router(auth_router)
     app.include_router(admin_router)

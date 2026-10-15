@@ -394,11 +394,85 @@ class RepositoryService:
                 }
 
     async def filter_enabled(self, actor, items):
-        visible = []
+        from devflow.facts.service import recheck
+        from devflow.jobs.models import Job
+        from devflow.jobs.service import JobService
+        from devflow.repositories.schemas import (
+            RepositoryListView,
+            RepositorySyncSummary,
+        )
+        from devflow.sync.models import RepositorySync
+
+        authorized = []
         for item in items:
             try:
-                visible.append(await self.policy.require(actor, item.id))
+                key = await JobService(self.factory, self.policy)._authorize(
+                    actor, item.id, fresh=False
+                )
+                authorized.append((item, key))
+            except AppError as error:
+                if error.status != 404:
+                    raise
+        async with self.factory() as db:
+            summaries = {
+                state.repository_id: RepositorySyncSummary(
+                    status=state.status,
+                    generation=state.generation,
+                    requested_sequence=state.requested_sequence,
+                    processed_sequence=state.processed_sequence,
+                    error_code="budget_exhausted"
+                    if state.status == "budget_exhausted"
+                    else job.error_code
+                    if job
+                    else None,
+                    retry_at=job.available_at
+                    if job and job.status == "retry_wait"
+                    else None,
+                )
+                for state, job in await db.execute(
+                    select(RepositorySync, Job)
+                    .outerjoin(Job, Job.id == RepositorySync.active_job_id)
+                    .where(
+                        RepositorySync.repository_id.in_(
+                            [item.id for item, _ in authorized]
+                        )
+                    )
+                )
+            }
+        visible = []
+        for item, key in authorized:
+            try:
+                await recheck(self.policy, actor, item.id, key)
+                visible.append(
+                    RepositoryListView(
+                        **item.model_dump(),
+                        sync=summaries.get(item.id, RepositorySyncSummary()),
+                    )
+                )
             except AppError as error:
                 if error.status != 404:
                     raise
         return visible
+
+    async def detail(self, actor, repository_id):
+        from devflow.facts.service import recheck
+        from devflow.jobs.service import JobService
+        from devflow.repositories.schemas import RepositoryDetailView
+        from devflow.sync.routes import sync_view
+        from devflow.sync.scope import transaction
+
+        jobs = JobService(self.factory, self.policy)
+        key = await jobs._authorize(actor, repository_id, fresh=False)
+        try:
+            async with transaction(self.factory) as db:
+                await jobs._lock_authorization(db, actor, key)
+                repo = await db.get(Repository, repository_id)
+                result = RepositoryDetailView(
+                    **RepositoryView.model_validate(repo).model_dump(),
+                    sync=await sync_view(db, repository_id),
+                )
+        except AppError as error:
+            await self.policy.audit_denial(actor, error, repository_id)
+            raise
+        await recheck(self.policy, actor, repository_id, key)
+        return result

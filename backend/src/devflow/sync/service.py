@@ -441,6 +441,9 @@ class SyncService:
                     ):
                         state.last_reconciled_at = now
                     await enqueue(db, state, installation, repository)
+                    from devflow.health.service import request_health
+
+                    await request_health(db, repository.id)
             return True
 
     @staticmethod

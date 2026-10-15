@@ -73,6 +73,13 @@ async def run_worker(
                     GitHubDataClient(github),
                     tokens,
                 )
+            if kind == "repository.health":
+                from devflow.health.service import HealthService
+
+                service = HealthService(factory, policy, settings)
+                frozen = await service.freeze(lease)
+                await service.publish(lease, frozen)
+                return None
             raise AppError("service_unavailable", 503, "Job handler unavailable")
 
         from devflow.github.installations import InstallationTokens

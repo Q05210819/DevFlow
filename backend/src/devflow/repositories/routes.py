@@ -1,4 +1,5 @@
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
@@ -8,6 +9,8 @@ from devflow.errors import AppError
 from devflow.pagination import Page
 from devflow.repositories.schemas import (
     CandidateRepository,
+    RepositoryDetailView,
+    RepositoryListView,
     RepositoryRegister,
     RepositoryView,
 )
@@ -57,6 +60,17 @@ async def list_enabled(
     actor: Annotated[Actor, Depends(require_actor)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     cursor: str | None = None,
-) -> Page[RepositoryView]:
+) -> Page[RepositoryListView]:
     response.headers["Cache-Control"] = "no-store"
     return await get_repository_service(request).list_enabled(actor, limit, cursor)
+
+
+@router.get("/repositories/{repository_id}")
+async def detail(
+    repository_id: UUID,
+    request: Request,
+    response: Response,
+    actor: Annotated[Actor, Depends(require_actor)],
+) -> RepositoryDetailView:
+    response.headers["Cache-Control"] = "no-store"
+    return await get_repository_service(request).detail(actor, repository_id)

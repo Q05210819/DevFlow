@@ -2,6 +2,7 @@ import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
+from support.repository_env import repo_env as repo_env  # noqa: PLC0414
 
 
 def test_migrate_empty_database(empty_database):
@@ -122,7 +123,7 @@ async def test_content_downgrade_preserves_new_evidence(
     async with db_factory() as db:
         assert (
             await db.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0006_content_webhooks"
+            == ScriptDirectory.from_config(migrated_database[1]).get_current_head()
         )
         table = {
             "content_receipt": "webhook_deliveries",
@@ -130,3 +131,23 @@ async def test_content_downgrade_preserves_new_evidence(
             "version_hint": "repository_syncs",
         }[evidence]
         assert await db.scalar(text(f"SELECT count(*) FROM {table}")) == 1
+
+
+@pytest.mark.asyncio
+async def test_health_downgrade_refuses_durable_demand(repo_env, migrated_database):
+    from devflow.health.service import HealthService
+    from devflow.sync.models import RepositorySync
+
+    env = repo_env
+    repo = await env.service.register(env.actor, 11, 101)
+    await HealthService(env.factory, env.policy, env.settings).request(
+        env.actor, repo.id, "migration"
+    )
+    with pytest.raises(RuntimeError, match="Cannot discard phase-two data"):
+        command.downgrade(migrated_database[1], "0006_content_webhooks")
+    async with env.factory() as db:
+        assert (await db.get(RepositorySync, repo.id)).health_requested_sequence == 1
+        assert (
+            await db.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0007_health_requests"
+        )

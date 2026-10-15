@@ -38,6 +38,14 @@ class RepositorySync(Base):
         CheckConstraint("request_count >= 0", name="request_count"),
         CheckConstraint("version_hint_sequence >= 0", name="version_hint_sequence"),
         CheckConstraint(
+            "health_requested_sequence >= health_processed_sequence AND health_processed_sequence >= 0",
+            name="health_sequence_order",
+        ),
+        CheckConstraint(
+            "health_status IN ('idle','queued','running','retry_wait','completed','failed')",
+            name="valid_health_status",
+        ),
+        CheckConstraint(
             "status IN ('idle','queued','running','retry_wait','completed','failed','budget_exhausted')",
             name="valid_status",
         ),
@@ -58,6 +66,15 @@ class RepositorySync(Base):
     next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     health_generation: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    health_requested_sequence: Mapped[int] = mapped_column(
+        BigInteger, server_default="0"
+    )
+    health_processed_sequence: Mapped[int] = mapped_column(
+        BigInteger, server_default="0"
+    )
+    active_health_job_id: Mapped[UUID | None] = mapped_column(ForeignKey("jobs.id"))
+    health_status: Mapped[str] = mapped_column(String(32), server_default="idle")
+    health_error_code: Mapped[str | None] = mapped_column(String(64))
     published_health_generation: Mapped[int] = mapped_column(
         BigInteger, server_default="0"
     )
@@ -152,7 +169,8 @@ class RepositoryCommandReceipt(Base):
     __tablename__ = "repository_command_receipts"
     __table_args__ = (
         CheckConstraint(
-            "operation IN ('sync.refresh','sync.backfill')", name="valid_operation"
+            "operation IN ('sync.refresh','sync.backfill','health.refresh')",
+            name="valid_operation",
         ),
         CheckConstraint("demand_sequence > 0", name="positive_demand_sequence"),
         CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash"),

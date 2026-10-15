@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select, text
 from support.repository_env import repo_env as repo_env  # noqa: PLC0414
+from support.sync_env import claim_fact_sync
 from support.sync_env import sync_env as sync_env  # noqa: PLC0414
 
 from devflow.facts.models import Fact
@@ -490,7 +491,7 @@ async def test_selected_backfill_and_later_target_remain_separate(sync_env):
         checkpoint=work.cursor.model_copy(update={"stage": "done"}),
         complete=True,
     )
-    lease = await env.queue.claim(uuid4())
+    lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
     work = await env.sync.snapshot(lease)
     assert work.captured_sequence == 3 and work.cursor.stream == "pulls"
     assert (
@@ -608,7 +609,7 @@ async def test_disjoint_backfill_does_not_claim_unsampled_gap(sync_env):
                 streams=["actions"],
             ),
         )
-    lease = await env.queue.claim(uuid4())
+    lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
     work = await env.sync.snapshot(lease)
     await env.sync.commit_page(
         lease,

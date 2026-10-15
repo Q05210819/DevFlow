@@ -6,6 +6,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select, text, update
 from support.repository_env import repo_env as repo_env  # noqa: PLC0414
+from support.sync_env import claim_fact_sync
 from support.sync_env import sync_env as sync_env  # noqa: PLC0414
 
 from devflow.facts.models import Fact, FactCollection
@@ -102,7 +103,7 @@ async def drive(env, remote, max_units=100):
         client = GitHubClient(http, env.settings)
         # Recreate tokens every unit: a restarted process must remain within 5 requests.
         for _ in range(max_units):
-            lease = await env.queue.claim(uuid4())
+            lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
             if lease is None:
                 return
             before = len(calls)

@@ -42,7 +42,9 @@ async def test_actual_factory_register_discover_and_list(repo_env):
             "default_branch",
         }
         response = await client.get("/api/v1/repositories")
-        assert response.json()["items"] == [first.json()]
+        item = response.json()["items"][0]
+        assert item.pop("sync")["status"] == "queued"
+        assert [item] == [first.json()]
 
 
 @pytest.mark.asyncio

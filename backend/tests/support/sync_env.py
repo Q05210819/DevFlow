@@ -9,6 +9,20 @@ from support.repository_env import clear_initial_sync
 from support.repository_env import repo_env as repo_env  # noqa: PLC0414
 
 
+async def claim_fact_sync(queue, factory, repository_id):
+    """Collector tests select their fact job; automatic health remains queued."""
+    from uuid import uuid4
+
+    from devflow.sync.models import RepositorySync
+
+    async with factory() as db:
+        state = await db.get(RepositorySync, repository_id)
+        identity = state.active_job_id if state else None
+    if identity is None:
+        return None
+    return await queue._claim_one(uuid4(), identity, "repository.sync", repository_id)
+
+
 @pytest_asyncio.fixture
 async def sync_env(repo_env):
     from devflow.github.client import GitHubClient

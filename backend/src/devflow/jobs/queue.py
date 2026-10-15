@@ -79,6 +79,13 @@ class Queue:
     async def _claim_one(self, owner, identity, kind, repository_id):
         async with self._transaction() as session:
             state = None
+            if kind == "repository.health":
+                rows = await lock_scope(session, repository_id, skip_locked=True)
+                if rows is None:
+                    return None
+                installation, repository, state = rows
+                if state and state.active_health_job_id != identity:
+                    return None
             if kind == "repository.sync":
                 # All processes share admission, before any authorization row locks.
                 await session.execute(
@@ -127,7 +134,7 @@ class Queue:
             if job is None:
                 return None
             now = await session.scalar(select(func.clock_timestamp()))
-            if kind == "repository.sync" and (
+            if kind in {"repository.sync", "repository.health"} and (
                 not authorized(installation, repository, self.settings)
                 or (
                     state is not None
@@ -144,7 +151,9 @@ class Queue:
                 await self._failure(
                     session, job, now, "permission_revoked", False, None
                 )
-                await self._sync_failure(session, state, job, "permission_revoked")
+                await self._sync_failure(
+                    session, state, job, "permission_revoked", scope=rows
+                )
                 return None
             # The database clock may move between statements.
             if job.available_at > now:
@@ -159,7 +168,9 @@ class Queue:
             job.error_code = None
             job.request_count = 0
             job.attempt_started_at = now
-            if state:
+            if state and kind == "repository.health":
+                state.health_status, state.health_error_code = "running", None
+            elif state:
                 state.status = "running"
             await self._transition(session, job, "job.started")
             lease = Lease(job.id, owner, job.lease_generation, job.attempt)
@@ -204,7 +215,7 @@ class Queue:
                     select(Job.kind, Job.repository_id).where(Job.id == lease.job_id)
                 )
             ).first()
-            if identity and identity.kind == "repository.sync":
+            if identity and identity.kind in {"repository.sync", "repository.health"}:
                 rows = await lock_scope(session, identity.repository_id)
                 if rows is None or rows[2] is not None:
                     # Coordinated rounds must finish facts, cursor and Job together.
@@ -246,7 +257,7 @@ class Queue:
                 )
             ).first()
             state = None
-            if identity and identity.kind == "repository.sync":
+            if identity and identity.kind in {"repository.sync", "repository.health"}:
                 rows = await lock_scope(session, identity.repository_id)
                 if rows is None:
                     return False
@@ -273,7 +284,9 @@ class Queue:
             if job is None:
                 return False
             await self._failure(session, job, now, code, retryable, retry_at)
-            await self._sync_failure(session, state, job, code)
+            await self._sync_failure(
+                session, state, job, code, scope=rows if state is not None else None
+            )
             if denial:
                 await write_audit(
                     session,
@@ -307,7 +320,7 @@ class Queue:
         for identity, kind, repository_id in candidates:
             async with self._transaction() as session:
                 state = None
-                if kind == "repository.sync":
+                if kind in {"repository.sync", "repository.health"}:
                     rows = await lock_scope(session, repository_id, skip_locked=True)
                     if rows is None:
                         continue
@@ -323,14 +336,51 @@ class Queue:
                 old = Lease(job.id, job.lease_owner, job.lease_generation, job.attempt)
                 job.lease_generation += 1
                 await self._failure(session, job, now, "lease_expired", True, None)
-                await self._sync_failure(session, state, job, "lease_expired")
+                await self._sync_failure(
+                    session,
+                    state,
+                    job,
+                    "lease_expired",
+                    scope=rows if state is not None else None,
+                )
                 recovered.append(old)
         for lease in recovered:
             _metric("queue.recovered", lease, error_code="lease_expired")
         return len(recovered)
 
-    @staticmethod
-    async def _sync_failure(session, state, job, code):
+    async def _sync_failure(self, session, state, job, code, *, scope=None):
+        if state is not None and job.kind == "repository.health":
+            if state.active_health_job_id == job.id:
+                state.health_status = (
+                    "retry_wait" if job.status == "retry_wait" else "failed"
+                )
+                state.health_error_code = code
+                if job.status == "failed":
+                    state.active_health_job_id = None
+                    # Only a newer, already accepted demand gets a fresh budget.
+                    # The same failed captured sequence never retries indefinitely.
+                    if (
+                        scope is not None
+                        and state.health_requested_sequence
+                        > job.input.get(
+                            "captured_sequence", state.health_requested_sequence
+                        )
+                    ):
+                        installation, repository, _ = scope
+                        if authorized(installation, repository, self.settings) and all(
+                            job.input.get(k) == v
+                            for k, v in {
+                                "installation_id": installation.installation_id,
+                                "installation_version": installation.auth_version,
+                                "repository_version": repository.auth_version,
+                            }.items()
+                        ):
+                            from devflow.health.service import enqueue_health
+
+                            await enqueue_health(
+                                session, state, installation, repository
+                            )
+            return
         if (
             state is None
             or state.active_job_id != job.id

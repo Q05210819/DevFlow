@@ -409,3 +409,72 @@ class CollectionInput(StrictDTO):
         if self.collection not in allowed[self.parent_kind]:
             raise ValueError("Collection does not belong to the parent kind")
         return self
+
+
+class FactView(StrictDTO):
+    id: UUID
+    kind: FactKind
+    source_id: GitHubID
+    number: GitHubID | None
+    version_key: str
+    source_updated_at: UTCDateTime | None
+    observed_at: UTCDateTime
+    source_url: str | None
+    unavailable: bool
+    payload: FactPayload
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def typed_payload(cls, value, info):
+        return validate_fact_payload(info.data["kind"], value)
+
+
+class FactCoverage(StrictDTO):
+    stream: Literal["issues", "pulls", "actions"]
+    status: Literal[
+        "not_synced",
+        "pending",
+        "running",
+        "complete",
+        "partial",
+        "failed",
+        "permission_missing",
+    ]
+    start: UTCDateTime | None = None
+    end: UTCDateTime | None = None
+    completed_watermark: UTCDateTime | None = None
+    last_success_at: UTCDateTime | None = None
+    error_code: str | None = None
+
+    @field_validator("error_code")
+    @classmethod
+    def safe_error(cls, value):
+        # Job schemas use StrictDTO above; resolve the finite union after imports.
+        from devflow.jobs.schemas import JobErrorCode
+
+        return (
+            TypeAdapter(JobErrorCode | CollectionReason).validate_python(value)
+            if value is not None
+            else None
+        )
+
+
+class CollectionView(StrictDTO):
+    collection: CollectionKind
+    version_key: str
+    complete: bool
+    reason: CollectionReason | None
+    observed_at: UTCDateTime | None
+
+
+class FactPage(StrictDTO):
+    items: list[FactView]
+    next_cursor: str | None = None
+    coverage: FactCoverage
+    collection: CollectionView | None = None
+
+
+class FactDetail(StrictDTO):
+    item: FactView
+    collections: list[CollectionView]
+    coverage: FactCoverage

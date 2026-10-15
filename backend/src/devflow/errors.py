@@ -7,6 +7,7 @@ ERROR_CODES = frozenset(
         "unauthenticated",
         "forbidden",
         "resource_not_found",
+        "fact_not_found",
         "validation_error",
         "idempotency_conflict",
         "github_rate_limited",

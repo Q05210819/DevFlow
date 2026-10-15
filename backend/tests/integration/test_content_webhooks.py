@@ -313,6 +313,8 @@ async def test_content_parser_rejects_invalid_identity_without_receipt(
 async def test_rebinding_rebuilds_retained_backfill_checkpoint(repo_env):
     from datetime import UTC, datetime
 
+    from support.sync_env import claim_fact_sync
+
     from devflow.jobs.queue import Queue
     from devflow.sync.scheduler import request_sync
     from devflow.sync.schemas import BackfillRange
@@ -342,7 +344,7 @@ async def test_rebinding_rebuilds_retained_backfill_checkpoint(repo_env):
     )
     async with env.factory.begin() as db:
         await request_sync(db, repo.id, reason="backfill", backfill=window)
-    old = await queue.claim(uuid4())
+    old = await claim_fact_sync(queue, env.factory, repo.id)
     work = await sync.snapshot(old)
     assert await sync.commit_page(
         old,
