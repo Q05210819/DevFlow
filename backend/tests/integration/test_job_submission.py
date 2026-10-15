@@ -92,7 +92,22 @@ async def test_same_key_different_input_conflicts_without_mutating_original(job_
         row = await session.get(Job, original.id)
         assert row.repository_id == env.repository.id
         assert row.input == {"repository_id": str(env.repository.id)}
-        assert await session.scalar(select(func.count()).select_from(Job)) == 1
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(Job)
+                .where(Job.kind == "repository.access_probe")
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(Job)
+                .where(Job.kind == "repository.sync", Job.repository_id == other.id)
+            )
+            == 1
+        )
 
 
 async def test_idempotency_does_not_bypass_reauthorization(job_env):

@@ -17,17 +17,84 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from devflow.db import Base
 
+WEBHOOK_EVENTS = (
+    "installation",
+    "installation_repositories",
+    "github_app_authorization",
+    "unknown",
+    "issues",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "workflow_run",
+    "workflow_job",
+    "push",
+    "create",
+    "delete",
+    "repository",
+)
+WEBHOOK_ACTIONS = (
+    "created",
+    "deleted",
+    "suspend",
+    "unsuspend",
+    "new_permissions_accepted",
+    "added",
+    "removed",
+    "revoked",
+    "opened",
+    "edited",
+    "closed",
+    "reopened",
+    "assigned",
+    "unassigned",
+    "labeled",
+    "unlabeled",
+    "locked",
+    "unlocked",
+    "milestoned",
+    "demilestoned",
+    "pinned",
+    "unpinned",
+    "transferred",
+    "typed",
+    "untyped",
+    "synchronize",
+    "converted_to_draft",
+    "ready_for_review",
+    "review_requested",
+    "review_request_removed",
+    "enqueued",
+    "dequeued",
+    "auto_merge_enabled",
+    "auto_merge_disabled",
+    "submitted",
+    "dismissed",
+    "requested",
+    "in_progress",
+    "completed",
+    "queued",
+    "waiting",
+    "pending",
+    "renamed",
+    "privatized",
+    "publicized",
+    "archived",
+    "unarchived",
+)
+
 
 class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
     __table_args__ = (
         CheckConstraint("status IN ('processed', 'ignored')", name="valid_status"),
         CheckConstraint(
-            "event_name IN ('installation', 'installation_repositories', 'github_app_authorization', 'unknown')",
+            f"event_name IN {WEBHOOK_EVENTS}",
             name="valid_event",
         ),
         CheckConstraint(
-            "action IS NULL OR action IN ('created', 'deleted', 'suspend', 'unsuspend', 'new_permissions_accepted', 'added', 'removed', 'revoked')",
+            f"action IS NULL OR action IN {WEBHOOK_ACTIONS}",
             name="valid_action",
         ),
     )
@@ -39,6 +106,11 @@ class WebhookDelivery(Base):
     # External identifiers are observations, including unknown local actors.
     installation_id: Mapped[int | None] = mapped_column(BigInteger)
     github_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    github_repository_id: Mapped[int | None] = mapped_column(BigInteger)
+    target_kind: Mapped[str | None] = mapped_column(String(16))
+    source_id: Mapped[int | None] = mapped_column(BigInteger)
+    number: Mapped[int | None] = mapped_column(BigInteger)
+    attempt: Mapped[int | None] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(16))
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp()

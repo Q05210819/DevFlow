@@ -11,6 +11,7 @@ from devflow.facts.schemas import (
     StrictDTO,
     UTCDateTime,
 )
+from devflow.jobs.schemas import JobErrorCode
 
 SyncStream = Literal["issues", "pulls", "actions"]
 SyncStatus = Literal[
@@ -18,6 +19,22 @@ SyncStatus = Literal[
 ]
 CursorStatus = Literal[
     "pending", "running", "complete", "partial", "failed", "permission_missing"
+]
+CheckpointStage = Literal[
+    "enumerate",
+    "detail",
+    "comments",
+    "reviews",
+    "review_comments",
+    "files",
+    "verify",
+    "attempts",
+    "jobs",
+    "done",
+    "issue_identity",
+    "repository_proof",
+    "permission_proof",
+    "missing_verify",
 ]
 
 
@@ -83,22 +100,7 @@ class SyncCheckpoint(StrictDTO):
     window: SyncWindow | None = None
     pending_targets: list[SyncTarget] = Field(default_factory=list, max_length=100)
     target: SyncTarget | None = None
-    stage: Literal[
-        "enumerate",
-        "detail",
-        "comments",
-        "reviews",
-        "review_comments",
-        "files",
-        "verify",
-        "attempts",
-        "jobs",
-        "done",
-        "issue_identity",
-        "repository_proof",
-        "permission_proof",
-        "missing_verify",
-    ] = "enumerate"
+    stage: CheckpointStage = "enumerate"
     missing_stage: Literal["detail", "issue_identity"] | None = None
     child_page: int = Field(default=1, strict=True, ge=1)
     captured_sha: CapturedSHA | None = None
@@ -141,3 +143,62 @@ class SyncDemandInput(StrictDTO):
         if (self.reason == "backfill") != (self.backfill is not None):
             raise ValueError("Backfill demand requires a backfill window")
         return self
+
+
+class SyncRefresh(StrictDTO):
+    resume: bool = Field(default=False, strict=True)
+
+
+class SyncBackfill(StrictDTO):
+    start: UTCDateTime
+    end: UTCDateTime
+    streams: list[SyncStream] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def valid_range(self):
+        from datetime import timedelta
+
+        if self.start > self.end or self.end - self.start > timedelta(days=365):
+            raise ValueError("Invalid backfill window")
+        if len(set(self.streams)) != len(self.streams):
+            raise ValueError("Backfill streams must be unique")
+        return self
+
+
+class SyncCoverage(StrictDTO):
+    start: UTCDateTime | None = None
+    end: UTCDateTime | None = None
+    completed_watermark: UTCDateTime | None = None
+
+
+class SyncRemaining(StrictDTO):
+    # Counts describe only persisted work, never the unknown remote total.
+    pending_targets: int = Field(ge=0)
+    pending_windows: int = Field(ge=0)
+    unresolved_windows: int = Field(ge=0)
+    current_target: bool
+    enumeration_complete: bool | None
+    mode: Literal["initial", "incremental", "open", "backfill", "reconcile", "targeted"]
+    stage: CheckpointStage
+    reason: CollectionReason | None = None
+
+
+class SyncStreamView(StrictDTO):
+    stream: SyncStream
+    status: CursorStatus | Literal["not_synced"]
+    coverage: SyncCoverage
+    last_success_at: UTCDateTime | None = None
+    remaining: SyncRemaining | None = None
+    error_code: JobErrorCode | CollectionReason | None = None
+
+
+class SyncView(StrictDTO):
+    repository_id: UUID
+    requested_sequence: int = Field(ge=0)
+    processed_sequence: int = Field(ge=0)
+    generation: int = Field(ge=0)
+    status: SyncStatus
+    streams: list[SyncStreamView]
+    error_code: JobErrorCode | CollectionReason | None = None
+    next_due_at: UTCDateTime | None = None
+    retry_at: UTCDateTime | None = None

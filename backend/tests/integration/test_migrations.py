@@ -69,3 +69,64 @@ async def test_auth_change_time_survives_profile_updates(db_factory):
         user = await session.get(User, user_id)
         assert user.login == "after" and user.auth_changed_at == cutoff
         assert user.auth_changed_order == order
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence", ["content_receipt", "command_receipt", "version_hint"]
+)
+async def test_content_downgrade_preserves_new_evidence(
+    db_factory, migrated_database, evidence
+):
+    from uuid import uuid4
+
+    from devflow.auth.models import User
+    from devflow.github.models import GitHubInstallation, WebhookDelivery
+    from devflow.repositories.models import Repository
+    from devflow.sync.models import RepositoryCommandReceipt, RepositorySync
+
+    async with db_factory.begin() as db:
+        if evidence == "content_receipt":
+            db.add(
+                WebhookDelivery(
+                    delivery_id=uuid4(), event_name="push", status="ignored"
+                )
+            )
+        else:
+            user = User(github_id=42)
+            db.add_all([user, GitHubInstallation(installation_id=11)])
+            await db.flush()
+            repo = Repository(
+                github_repository_id=101,
+                installation_id=11,
+                full_name="team/private",
+                private=True,
+            )
+            db.add(repo)
+            await db.flush()
+            if evidence == "version_hint":
+                db.add(RepositorySync(repository_id=repo.id, version_hint_sequence=1))
+            else:
+                db.add(
+                    RepositoryCommandReceipt(
+                        actor_id=user.id,
+                        repository_id=repo.id,
+                        operation="sync.refresh",
+                        idempotency_key="retained",
+                        payload_hash="a" * 64,
+                        demand_sequence=1,
+                    )
+                )
+    with pytest.raises(RuntimeError, match="phase-two data"):
+        command.downgrade(migrated_database[1], "0005_data_foundation")
+    async with db_factory() as db:
+        assert (
+            await db.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0006_content_webhooks"
+        )
+        table = {
+            "content_receipt": "webhook_deliveries",
+            "command_receipt": "repository_command_receipts",
+            "version_hint": "repository_syncs",
+        }[evidence]
+        assert await db.scalar(text(f"SELECT count(*) FROM {table}")) == 1

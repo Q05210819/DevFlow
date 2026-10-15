@@ -3,7 +3,7 @@
 import hashlib
 import json
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 
@@ -12,7 +12,7 @@ from devflow.errors import AppError
 from devflow.jobs.models import Job
 from devflow.jobs.service import append_event
 from devflow.repositories.models import Repository
-from devflow.sync.models import RepositorySync, SyncDemand
+from devflow.sync.models import RepositorySync, SyncCursor, SyncDemand
 from devflow.sync.schemas import BackfillRange, SyncDemandInput, SyncTarget
 from devflow.sync.scope import authorized, lock_scope, transaction
 
@@ -110,6 +110,7 @@ async def request_sync(
     target: SyncTarget | None = None,
     backfill: BackfillRange | None = None,
     resume: bool = False,
+    actor_id: UUID | None = None,
 ) -> RepositorySync:
     # Validate before taking locks. The caller owns actor checks and the transaction.
     value = SyncDemandInput(
@@ -136,6 +137,47 @@ async def request_sync(
         )
     )
     await db.flush()
+    if (reason == "registration" or resume) and (
+        state.status != "budget_exhausted" or resume
+    ):
+        previous = await db.scalar(
+            select(Job)
+            .where(Job.repository_id == repository_id, Job.kind == "repository.sync")
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if previous and (
+            previous.input.get("installation_id") != installation.installation_id
+            or previous.input.get("installation_version") != installation.auth_version
+            or previous.input.get("repository_version") != repository.auth_version
+        ):
+            if previous.status in {"queued", "running", "retry_wait"}:
+                previous.status = "failed"
+                previous.error_code = "permission_revoked"
+                previous.lease_owner = None
+                previous.lease_expires_at = None
+                await append_event(db, previous, "failed", "permission_revoked")
+                await write_audit(
+                    db,
+                    AuditEntry(
+                        action="job.failed",
+                        resource_type="job",
+                        resource_id=previous.id,
+                        job_id=previous.id,
+                        outcome="failure",
+                        reason_code="permission_revoked",
+                    ),
+                )
+            state.active_job_id = None
+            state.status = "idle"
+            # Rebuild even if a retained backfill has the same captured prefix.
+            # Coverage stays historical; no old-binding checkpoint is resumed.
+            cursors = await db.scalars(
+                select(SyncCursor).where(SyncCursor.repository_id == repository_id)
+            )
+            for cursor in cursors:
+                cursor.checkpoint = {**cursor.checkpoint, "captured_sequence": 0}
     # Only explicit admin resume restarts an exhausted round.
     can_start = (
         resume
@@ -167,6 +209,7 @@ async def request_sync(
     await write_audit(
         db,
         AuditEntry(
+            actor_id=actor_id,
             action="backfill.requested" if backfill else "sync.requested",
             resource_type="repository",
             resource_id=repository_id,

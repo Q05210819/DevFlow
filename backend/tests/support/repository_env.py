@@ -1,7 +1,10 @@
 """Real database/services with only GitHub's HTTP transport replaced."""
 
 import hashlib
+import json
+import re
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -68,7 +71,29 @@ async def repo_env(db_factory, settings_factory, tmp_path):
         path = request.url.path
         if env.before_response:
             await env.before_response(request)
+        if request.method == "POST" and re.fullmatch(
+            r"/app/installations/[1-9][0-9]*/access_tokens", path
+        ):
+            requested = json.loads(request.content)
+            return httpx.Response(
+                201,
+                json={
+                    "token": "synthetic-installation-token",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "permissions": requested["permissions"],
+                    "repositories": [
+                        {"id": number} for number in requested["repository_ids"]
+                    ],
+                },
+            )
+        if path in {"/repos/team/private/issues", "/repos/team/private/pulls"}:
+            assert request.method == "GET"
+            return httpx.Response(200, json=[])
+        if path == "/repos/team/private/actions/runs":
+            assert request.method == "GET"
+            return httpx.Response(200, json={"total_count": 0, "workflow_runs": []})
         if path.startswith("/app/installations/"):
+            assert request.method == "GET"
             return httpx.Response(
                 env.app_status, json=installation(int(path.rsplit("/", 1)[1]))
             )
@@ -115,6 +140,38 @@ async def repo_env(db_factory, settings_factory, tmp_path):
             db_factory, env.github, env.credentials, settings, policy=env.policy
         )
         yield env
+
+
+async def clear_initial_sync(env):
+    """Isolate tests that explicitly arrange their own demands or only probes."""
+    from sqlalchemy import delete, select
+
+    from devflow.audit.models import AuditLog
+    from devflow.jobs.models import Job
+    from devflow.sync.models import RepositorySync, SyncCursor, SyncDemand
+
+    async with env.factory.begin() as db:
+        jobs = list(
+            await db.scalars(
+                select(Job.id).where(
+                    Job.repository_id == env.repository.id,
+                    Job.kind == "repository.sync",
+                )
+            )
+        )
+        await db.execute(
+            delete(SyncCursor).where(SyncCursor.repository_id == env.repository.id)
+        )
+        await db.execute(
+            delete(SyncDemand).where(SyncDemand.repository_id == env.repository.id)
+        )
+        await db.execute(
+            delete(RepositorySync).where(
+                RepositorySync.repository_id == env.repository.id
+            )
+        )
+        await db.execute(delete(AuditLog).where(AuditLog.job_id.in_(jobs)))
+        await db.execute(delete(Job).where(Job.id.in_(jobs)))
 
 
 @asynccontextmanager

@@ -21,10 +21,39 @@ from devflow.repositories.models import Repository
 from devflow.repositories.policy import RepositoryPolicy, check_actor
 from devflow.repositories.schemas import CandidateRepository, RepositoryView
 from devflow.security import read_secret_file, secret_configuration_error
+from devflow.sync.models import RepositoryCommandReceipt
+from devflow.sync.scheduler import request_sync
 
 
 def invalid_cursor():
     return AppError("invalid_cursor", 400, "Invalid cursor")
+
+
+async def command_receipt(
+    db: AsyncSession,
+    *,
+    actor_id: UUID,
+    repository_id: UUID,
+    operation: str,
+    idempotency_key: str,
+    normalized_payload: dict,
+) -> tuple[RepositoryCommandReceipt | None, str]:
+    """Caller holds User -> Installation -> Repository; replay still needs access.
+
+    Returns the durable receipt and canonical hash. The caller records the demand
+    reference and audit in this transaction and renders the current resource.
+    """
+    payload_hash = hashlib.sha256(
+        json.dumps(normalized_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    receipt = await db.get(
+        RepositoryCommandReceipt, (actor_id, repository_id, operation, idempotency_key)
+    )
+    if receipt and receipt.payload_hash != payload_hash:
+        raise AppError(
+            "idempotency_conflict", 409, "Idempotency key conflicts with input"
+        )
+    return receipt, payload_hash
 
 
 class RepositoryService:
@@ -295,6 +324,9 @@ class RepositoryService:
             self.policy.promote(installation, repository, proof)
             await session.flush()
             if changed:
+                await request_sync(
+                    session, repository.id, reason="registration", actor_id=actor.id
+                )
                 await write_audit(
                     session,
                     AuditEntry(

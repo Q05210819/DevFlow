@@ -2,13 +2,36 @@ import asyncio
 import json
 import subprocess
 import sys
+import time
+import traceback
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from support.job_env import job_env as job_env  # noqa: PLC0414
 from support.repository_env import repo_env as repo_env  # noqa: PLC0414
+
+
+@pytest_asyncio.fixture
+async def worker_env(job_env):
+    """Probe-only Worker tests explicitly arrange no due background sync."""
+    from devflow.sync.models import RepositorySync
+
+    env = job_env
+    async with env.factory.begin() as db:
+        now = await db.scalar(select(func.clock_timestamp()))
+        db.add(
+            RepositorySync(
+                repository_id=env.repository.id,
+                status="completed",
+                next_due_at=now + timedelta(days=1),
+                last_reconciled_at=now,
+            )
+        )
+    return env
 
 
 async def wait_until(predicate, *, timeout=15):
@@ -41,13 +64,15 @@ async def reap(child):
 
 
 @pytest.mark.asyncio
-async def test_killed_worker_is_recovered_by_new_process_without_api(job_env, tmp_path):
+async def test_killed_worker_is_recovered_by_new_process_without_api(
+    worker_env, tmp_path
+):
     from devflow.audit.models import AuditLog
     from devflow.jobs.models import Job, RunEvent
     from devflow.jobs.queue import Lease, Queue
     from devflow.jobs.schemas import ProbeResult
 
-    env = job_env
+    env = worker_env
     job = await env.jobs.submit_probe(env.actor, env.repository.id, "process-recovery")
     old, marker, _ = start_worker(env, tmp_path, "old", "blocked")
     new = None
@@ -150,12 +175,12 @@ async def test_killed_worker_is_recovered_by_new_process_without_api(job_env, tm
 
 @pytest.mark.asyncio
 async def test_run_worker_respects_configured_concurrency_and_caller_owned_http(
-    job_env,
+    worker_env,
 ):
     from devflow.jobs.models import Job
     from devflow.worker import run_worker
 
-    env = job_env
+    env = worker_env
     jobs = [
         await env.jobs.submit_probe(
             env.actor, env.repository.id, f"concurrent-{number}"
@@ -218,15 +243,51 @@ async def test_run_worker_respects_configured_concurrency_and_caller_owned_http(
 
 
 @pytest.mark.asyncio
-async def test_real_worker_heartbeat_commits_while_provider_is_pending(job_env):
+async def test_real_worker_heartbeat_commits_while_provider_is_pending(
+    worker_env, monkeypatch
+):
+    import devflow.worker as worker_module
     from devflow.jobs.models import Job
     from devflow.worker import run_worker
 
-    env = job_env
+    env = worker_env
     job = await env.jobs.submit_probe(env.actor, env.repository.id, "heartbeat")
     started = asyncio.Event()
     release = asyncio.Event()
     stop = asyncio.Event()
+    diagnostics = {"probe_id": str(job.id), "handlers": [], "exceptions": []}
+    execute = worker_module._execute
+
+    async def observe(queue, lease, handler, **kwargs):
+        async with env.factory() as db:
+            kind = await db.scalar(select(Job.kind).where(Job.id == lease.job_id))
+        diagnostics["handlers"].append(
+            {"id": str(lease.job_id), "kind": kind, "monotonic": time.monotonic()}
+        )
+
+        async def boundary(current):
+            try:
+                return await handler(current)
+            except Exception as error:
+                diagnostics["exceptions"].append(
+                    {
+                        "id": str(current.job_id),
+                        "kind": kind,
+                        "type": type(error).__name__,
+                        "frames": [
+                            (Path(frame.filename).name, frame.name, frame.lineno)
+                            for frame in traceback.extract_tb(error.__traceback__)
+                        ],
+                        "sqlstate": getattr(
+                            getattr(error, "orig", None), "sqlstate", None
+                        ),
+                    }
+                )
+                raise
+
+        return await execute(queue, lease, boundary, **kwargs)
+
+    monkeypatch.setattr(worker_module, "_execute", observe)
 
     async def block(request):
         if request.url.path == "/user/installations":
@@ -242,8 +303,35 @@ async def test_real_worker_heartbeat_commits_while_provider_is_pending(job_env):
         )
     )
     try:
-        async with asyncio.timeout(5):
-            await started.wait()
+        try:
+            async with asyncio.timeout(5):
+                await started.wait()
+        except TimeoutError:
+            async with env.factory() as db:
+                diagnostics["jobs"] = [
+                    dict(row._mapping)
+                    for row in await db.execute(
+                        select(
+                            Job.id,
+                            Job.kind,
+                            Job.status,
+                            Job.attempt,
+                            Job.error_code,
+                            Job.available_at,
+                            func.clock_timestamp().label("db_now"),
+                            (Job.available_at <= func.clock_timestamp()).label(
+                                "eligible"
+                            ),
+                        )
+                    )
+                ]
+            diagnostics["http"] = [
+                (req.method, req.url.path)
+                for req in env.calls
+                if req.url.path == "/user/installations"
+                or req.url.path.endswith("/access_tokens")
+            ]
+            pytest.fail(json.dumps(diagnostics, default=str))
         async with env.factory.begin() as session:
             row = await session.get(Job, job.id, with_for_update=True)
             # A clearly future sentinel exposes the next committed renewal.
@@ -264,6 +352,9 @@ async def test_real_worker_heartbeat_commits_while_provider_is_pending(job_env):
             await task
         async with env.factory() as session:
             assert (await session.get(Job, job.id)).status == "succeeded"
+            assert list(await session.scalars(select(Job.kind))) == [
+                "repository.access_probe"
+            ]
     finally:
         release.set()
         stop.set()

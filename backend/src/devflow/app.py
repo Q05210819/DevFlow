@@ -1,7 +1,9 @@
 """FastAPI application factory."""
 
 import asyncio
+import math
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import httpx
@@ -30,6 +32,7 @@ from devflow.repositories.policy import RepositoryPolicy
 from devflow.repositories.routes import router as repository_router
 from devflow.repositories.service import RepositoryService
 from devflow.security import CredentialCipher, read_secret_file
+from devflow.sync.routes import router as sync_router
 
 
 def _error_response(
@@ -130,6 +133,7 @@ def create_app(
     app.state.settings = configured
     app.include_router(webhook_router)
     app.include_router(repository_router)
+    app.include_router(sync_router)
     app.include_router(job_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
@@ -156,7 +160,12 @@ def create_app(
 
     @app.exception_handler(AppError)
     async def app_error(request: Request, error: AppError):
-        return _error_response(request, error.code, error.status, error.message)
+        response = _error_response(request, error.code, error.status, error.message)
+        if error.retry_at is not None:
+            response.headers["Retry-After"] = str(
+                max(1, math.ceil((error.retry_at - datetime.now(UTC)).total_seconds()))
+            )
+        return response
 
     @app.exception_handler(OperationalError)
     @app.exception_handler(InterfaceError)

@@ -36,6 +36,7 @@ class RepositorySync(Base):
             name="health_generation_order",
         ),
         CheckConstraint("request_count >= 0", name="request_count"),
+        CheckConstraint("version_hint_sequence >= 0", name="version_hint_sequence"),
         CheckConstraint(
             "status IN ('idle','queued','running','retry_wait','completed','failed','budget_exhausted')",
             name="valid_status",
@@ -53,6 +54,7 @@ class RepositorySync(Base):
     status: Mapped[str] = mapped_column(String(32), server_default="idle")
     round_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     request_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    version_hint_sequence: Mapped[int] = mapped_column(BigInteger, server_default="0")
     next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     health_generation: Mapped[int] = mapped_column(BigInteger, server_default="0")
@@ -142,3 +144,26 @@ class SyncDemand(Base):
     @classmethod
     def from_input(cls, value: SyncDemandInput) -> "SyncDemand":
         return cls(**SyncDemandInput.model_validate(value).model_dump())
+
+
+class RepositoryCommandReceipt(Base):
+    """Durable HTTP idempotency, independent of the consumed demand journal."""
+
+    __tablename__ = "repository_command_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('sync.refresh','sync.backfill')", name="valid_operation"
+        ),
+        CheckConstraint("demand_sequence > 0", name="positive_demand_sequence"),
+        CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash"),
+        CheckConstraint("idempotency_key ~ '^[!-~]{1,128}$'", name="idempotency_key"),
+    )
+
+    actor_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    repository_id: Mapped[UUID] = mapped_column(
+        ForeignKey("repositories.id"), primary_key=True
+    )
+    operation: Mapped[str] = mapped_column(String(32), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    demand_sequence: Mapped[int] = mapped_column(BigInteger)
