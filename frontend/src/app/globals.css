@@ -54,6 +54,23 @@ tbody tr:last-child > * { border-bottom: 0; }
 .job-progress li { margin-top: .75rem; line-height: 1.8; }
 .sequence { display: inline-block; min-width: 1.8rem; text-align: center; color: #174fa1; background: #e6edf7; border-radius: 50%; }
 .back-link { display: inline-block; margin-top: 1.5rem; }
+.repository-detail, .repository-detail > *, .repository-detail section { min-width: 0; overflow-wrap: anywhere; }
+.repository-tabs, .repository-controls { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1.25rem 0; }
+.repository-tabs a { padding: .5rem .75rem; border-bottom: 2px solid transparent; }
+.repository-tabs a[aria-current="page"] { border-color: #184c88; font-weight: 650; }
+.repository-sections { display: grid; gap: 1.5rem; }
+.repository-detail h2 { font-size: 1.25rem; margin: .5rem 0 1rem; font-weight: 650; }
+.repository-detail h3 { font-size: 1.05rem; margin: 1rem 0 .5rem; font-weight: 650; }
+.fact-fields { margin: 1rem 0; }
+.fact-fields dt { color: #52657d; margin-top: .75rem; }
+.fact-fields dd { margin: .25rem 0; white-space: normal; overflow-wrap: anywhere; }
+.fact-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
+.fact-list { list-style: none; padding: 0; display: grid; gap: .75rem; margin: 1rem 0; }
+.fact-record, .fact-collection { margin-top: 1.25rem; }
+.repository-detail input, .repository-detail select { max-width: 100%; min-width: 0; }
+.repository-detail fieldset { margin: 1rem 0; padding: 1rem; border: 1px solid #d9dfe7; min-width: 0; }
+.stream-choice { display: inline-flex; flex-direction: row; align-items: center; margin-right: 1rem; }
+.stream-choice input { min-height: auto; }
 @media (max-width: 650px) {
   .topbar { gap: 1rem; padding: 1rem; }
   .topbar nav { order: 3; width: 100%; }

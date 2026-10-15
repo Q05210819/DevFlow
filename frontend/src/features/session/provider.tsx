@@ -1,7 +1,7 @@
 "use client";
 
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api, setCsrfToken } from "@/lib/api";
 import type { Session } from "@/lib/types";
 
@@ -24,13 +24,30 @@ export function registerEventConnection(connection: EventSource) {
 function SessionState({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const [signedOut, setSignedOut] = useState(false);
+  const identity = useRef<string | null | undefined>(undefined);
+  function acceptSession(value: Session | null) {
+    const next = value?.user.id ?? null;
+    if (identity.current !== undefined && identity.current !== next) {
+      const privateQueries = { predicate: (query: { queryKey: readonly unknown[] }) => query.queryKey[0] !== "session" };
+      void queryClient.cancelQueries(privateQueries);
+      queryClient.removeQueries(privateQueries);
+      for (const connection of eventConnections) connection.close();
+      eventConnections.clear();
+    }
+    identity.current = next;
+    // Install the new identity's token before private descendants can submit.
+    setCsrfToken(value?.csrf_token ?? null);
+    return value;
+  }
   const sessionQuery = useQuery({
     queryKey: ["session"],
     queryFn: async ({ signal }): Promise<Session | null> => {
       try {
-        return await api<Session>("/api/v1/session", { signal });
+        const value = await api<Session>("/api/v1/session", { signal });
+        signal.throwIfAborted();
+        return acceptSession(value);
       } catch (error) {
-        if (error instanceof ApiError && error.status === 401) return null;
+        if (error instanceof ApiError && error.status === 401) return acceptSession(null);
         throw error;
       }
     },

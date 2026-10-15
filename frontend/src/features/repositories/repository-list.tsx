@@ -3,11 +3,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { ApiError, api } from "@/lib/api";
 import type { JobView, Page, RepositoryView } from "@/lib/types";
 import { useSession } from "@/features/session/use-session";
 import { errorMessage, Pagination } from "@/features/admin/common";
 import { ConnectRepository } from "./connect-repository";
+import type { SyncSummary } from "./types";
 
 function CheckButton({ repository }: { repository: RepositoryView }) {
   const router = useRouter();
@@ -42,7 +44,7 @@ export function RepositoryList() {
   const cursor = cursors.at(-1);
   const repositories = useQuery({
     queryKey: ["repositories", session?.user.id, cursor],
-    queryFn: ({ signal }) => api<Page<RepositoryView>>(`/api/v1/repositories?${new URLSearchParams({ limit: "20", ...(cursor ? { cursor } : {}) })}`, { signal }),
+    queryFn: ({ signal }) => api<Page<RepositoryView & { sync: SyncSummary }>>(`/api/v1/repositories?${new URLSearchParams({ limit: "20", ...(cursor ? { cursor } : {}) })}`, { signal }),
     enabled: !!session,
   });
   return <main className="content">
@@ -51,7 +53,7 @@ export function RepositoryList() {
     {showConnect && session?.user.role === "admin" && <ConnectRepository />}
     {repositories.isPending ? <p role="status">正在加载仓库…</p> : repositories.isError ? <><p className="banner error" role="alert">{errorMessage(repositories.error)}</p><button onClick={() => void repositories.refetch()}>重新加载</button></> : <>
       {!repositories.data.items.length && <div className="panel empty-state"><h2>{session?.user.role === "admin" ? "尚未接入仓库" : "暂无可访问的仓库"}</h2><p>{session?.user.role === "admin" ? "选择接入仓库以查看可用的 GitHub 仓库。" : "请确认帐号权限，或联系管理员接入仓库。"}</p></div>}
-      <ul className="repository-grid" aria-label="已授权仓库">{repositories.data.items.map(repository => <li className="panel repository-card" key={repository.id}><h2>{repository.full_name}</h2><p>{repository.private ? "私有仓库" : "公开仓库"} · 默认分支：{repository.default_branch ?? "未设置"}</p><CheckButton repository={repository} /></li>)}</ul>
+      <ul className="repository-grid" aria-label="已授权仓库">{repositories.data.items.map(repository => <li className="panel repository-card" key={repository.id}><h2>{repository.full_name}</h2><p>{repository.private ? "私有仓库" : "公开仓库"} · 默认分支：{repository.default_branch ?? "未设置"}</p><Link className="primary-link" href={`/repositories/${repository.id}`} aria-label={`查看 ${repository.full_name}`}>查看事实与健康</Link><p>同步：{repository.sync?.status ?? "未知"} · 已处理 {repository.sync?.processed_sequence ?? "未知"} / 请求 {repository.sync?.requested_sequence ?? "未知"}{repository.sync?.retry_at ? ` · 重试时间：${repository.sync.retry_at}` : ""}{repository.sync?.error_code ? ` · ${repository.sync.error_code}` : ""}</p><CheckButton repository={repository} /></li>)}</ul>
     </>}
       <Pagination page={cursors.length + 1} busy={repositories.isFetching} hasNext={repositories.isSuccess && !!repositories.data.next_cursor} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (repositories.isSuccess && repositories.data.next_cursor) setCursors([...cursors, repositories.data.next_cursor]); }} />
   </main>;
