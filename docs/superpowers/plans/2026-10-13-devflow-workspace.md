@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**已裁定交接：** 开始2B前读取 [2A决策与2B R1–R10原文](../../operations/data-foundation-decisions.md)。这些既有裁定包括0008迁移、Windows原生进程适配、真实进程树清理/持久防护、授权来源、读取预算及RO/RW边界；仍是未实施计划，不据此声称崩溃安全或Workspace可用。
+
 **Goal:** 为获准仓库提供固定 commit SHA 的代码读取、搜索和可追溯引用。
 
 **Architecture:** API/Worker共享服务自有裸Git缓存，Worker写、API只读；PostgreSQL授权/任务租约控制版本发布。Git原始对象读取，不检出或执行仓库代码。2A事实和后台任务已存在，复用其有限类型分发与权限。
@@ -49,7 +51,7 @@
 
 ### Task 2: 版本解析、后台准备与租约发布
 
-**Files:** Create `workspace/models.py`, `schemas.py`, `service.py`, `handlers.py`, migration `0007_workspace.py`; Modify jobs kind/result、worker、migration env、github/data；Test `tests/integration/test_workspace_prepare.py`。
+**Files:** Create `workspace/models.py`, `schemas.py`, `service.py`, `handlers.py`, migration `0008_workspace.py`; Modify jobs kind/result、worker、migration env、github/data；Test `tests/integration/test_workspace_prepare.py`。
 
 **Interfaces:** `WorkspaceSelection` union `{kind:'branch'|'tag',name}` / `{kind:'pull',number,side:'base'|'head'}` / `{kind:'ci',run_id,attempt}`；`WorkspaceService.request(actor,repo,selection,key)->WorkspaceView`、`prepare(lease:Lease)->WorkspaceResult`、`get(actor,repo,workspace_id)->WorkspaceView`。记录WorkspaceVersion(id,repo,source_repo_id,commit_sha,tree_oid,source JSON,auth epochs,status,pin_ref,last_used_at,error)；public DTO不含pin_ref/磁盘路径/token。新增system kind `repository.workspace`，独立10分钟时限和全局1领取。
 

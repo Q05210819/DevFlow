@@ -30,7 +30,7 @@ from devflow.app import create_app
 from devflow.audit.models import AuditLog
 from devflow.bootstrap import bootstrap_admin
 from devflow.github.client import GitHubClient
-from devflow.jobs.models import RunEvent
+from devflow.jobs.models import Job, RunEvent
 
 
 @pytest.mark.parametrize(
@@ -215,8 +215,23 @@ async def test_allowlist_oauth_repository_worker_events_audit_and_revocation(
                         "job.started",
                         "job.succeeded",
                     } <= {entry.action for entry in audits}
+                    assert {"job.submitted", "job.started", "job.succeeded"} <= {
+                        entry.action for entry in audits if entry.job_id == UUID(job_id)
+                    }
+                    system_ids = set(
+                        await database.scalars(
+                            select(Job.id).where(
+                                Job.repository_id == UUID(repository_id),
+                                Job.kind.in_(["repository.sync", "repository.health"]),
+                                Job.requested_by.is_(None),
+                            )
+                        )
+                    )
+                    assert (
+                        system_ids
+                    )  # Registration also starts real fact synchronization.
                     assert all(
-                        entry.job_id == UUID(job_id)
+                        entry.job_id in {UUID(job_id), *system_ids}
                         for entry in audits
                         if entry.action.startswith("job.")
                     )

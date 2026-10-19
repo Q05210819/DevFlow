@@ -1,5 +1,7 @@
 """Acceptance fixtures: real application state, synthetic GitHub HTTP only."""
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -53,6 +55,11 @@ def synthetic_settings(directory: Path, database_url: str, origin: str) -> Setti
 class SyntheticGitHub:
     """Codes select a synthetic identity; production OAuth still validates state."""
 
+    def __init__(self):
+        self.observed = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=1)
+        self.rate_limit_page2 = False
+        self.actions_permission_missing = False
+
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if request.url.host == "github.com" and path == "/login/oauth/access_token":
@@ -71,6 +78,23 @@ class SyntheticGitHub:
                 },
             )
         assert request.url.host == "api.github.com"
+        if path == f"/app/installations/{INSTALLATION_ID}/access_tokens":
+            assert request.method == "POST"
+            scope = json.loads(request.content)
+            assert scope["repository_ids"] == [REPOSITORY_ID]
+            assert scope["permissions"] in [
+                {"metadata": "read", key: "read"}
+                for key in ("issues", "pull_requests", "actions")
+            ]
+            return httpx.Response(
+                201,
+                json={
+                    "token": "synthetic-installation-token",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "permissions": scope["permissions"],
+                    "repositories": [{"id": REPOSITORY_ID}],
+                },
+            )
         assert request.method == "GET"
         installation = {
             "id": INSTALLATION_ID,
@@ -81,6 +105,9 @@ class SyntheticGitHub:
         if path == f"/app/installations/{INSTALLATION_ID}":
             return httpx.Response(200, json=installation)
         token = request.headers.get("authorization")
+        if path.startswith(f"/repos/{REPOSITORY_NAME}"):
+            assert token == "Bearer synthetic-installation-token"
+            return self.data(request)
         assert token in {
             "Bearer synthetic-acceptance-admin",
             "Bearer synthetic-acceptance-member",
@@ -113,6 +140,201 @@ class SyntheticGitHub:
                 },
             )
         raise AssertionError(f"Unexpected synthetic GitHub endpoint: {path}")
+
+    def data(self, request: httpx.Request) -> httpx.Response:
+        """Finite source population, including real pagination and missing patches."""
+        suffix = request.url.path.removeprefix(f"/repos/{REPOSITORY_NAME}")
+        params = dict(request.url.params)
+        stamp = self.observed.isoformat()
+        user = {"id": MEMBER_ID, "login": "acceptance-member"}
+        issue = {
+            "id": 51001,
+            "number": 1,
+            "title": "Acceptance issue",
+            "body": "Private issue evidence",
+            "state": "open",
+            "labels": [],
+            "assignees": [],
+            "user": user,
+            "created_at": stamp,
+            "updated_at": stamp,
+            "closed_at": None,
+        }
+        second = {**issue, "id": 51003, "number": 3, "title": "Second acceptance issue"}
+        pr_issue = {**issue, "id": 51002, "number": 2, "pull_request": {}}
+        pull = {
+            **issue,
+            "id": 71002,
+            "number": 2,
+            "title": "Acceptance pull",
+            "body": "Private pull evidence",
+            "draft": False,
+            "merged": False,
+            "merge_commit_sha": None,
+            "merged_at": None,
+            "base": {"sha": "a" * 40, "ref": "main", "repo": {"id": REPOSITORY_ID}},
+            "head": {"sha": "b" * 40, "ref": "feature", "repo": {"id": REPOSITORY_ID}},
+        }
+        comment = {
+            "id": 61001,
+            "body": "Acceptance comment",
+            "user": user,
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
+        run = {
+            "id": 81001,
+            "run_attempt": 2,
+            "workflow_id": 41,
+            "event": "push",
+            "path": ".github/workflows/test.yml",
+            "name": "Acceptance CI",
+            "head_branch": "main",
+            "head_sha": "b" * 40,
+            "created_at": stamp,
+            "updated_at": stamp,
+            "run_started_at": stamp,
+            "status": "completed",
+            "conclusion": "success",
+        }
+        if self.actions_permission_missing and suffix.startswith("/actions/"):
+            return httpx.Response(
+                403, json={"message": "Resource not accessible by integration"}
+            )
+        list_path = suffix in {"/issues", "/pulls", "/actions/runs"} or suffix.endswith(
+            ("/comments", "/reviews", "/files", "/jobs")
+        )
+        page = 1
+        if list_path:
+            assert params.pop("per_page") == "100"
+            page = int(params.pop("page"))
+            assert page in (1, 2)
+        else:
+            assert not params
+        if suffix in {"/issues", "/pulls"}:
+            assert params.pop("sort") == "updated"
+            assert params.pop("direction") == "desc"
+            state = params.pop("state")
+            assert state in {"open", "closed", "all"}
+            since = params.pop("since", None)
+            assert not params
+            if suffix == "/pulls":
+                assert since is None and page == 1
+                return httpx.Response(200, json=[] if state == "closed" else [pull])
+            if since is not None and self.observed < datetime.fromisoformat(since):
+                return httpx.Response(200, json=[])
+            if page == 2:
+                if self.rate_limit_page2:
+                    self.rate_limit_page2 = False
+                    return httpx.Response(
+                        429,
+                        headers={"Retry-After": "3"},
+                        json={"message": "Synthetic rate limit"},
+                    )
+                return httpx.Response(200, json=[second])
+            return httpx.Response(
+                200,
+                json=[issue, pr_issue],
+                headers={
+                    "Link": f'<{request.url.copy_set_param("page", "2")}>; rel="next"',
+                },
+            )
+        if suffix == "/actions/runs":
+            created = params.pop("created", None)
+            assert not params and page == 1
+            included = True
+            if created:
+                start, end = (datetime.fromisoformat(t) for t in created.split(".."))
+                included = start <= self.observed <= end
+            return httpx.Response(
+                200,
+                json={
+                    "total_count": int(included),
+                    "workflow_runs": [run] if included else [],
+                },
+            )
+        assert not params
+        details = {
+            "": {"id": REPOSITORY_ID},
+            "/issues/1": issue,
+            "/issues/3": second,
+            "/issues/2": pr_issue,
+            "/pulls/2": pull,
+            "/actions/runs/81001": run,
+        }
+        if suffix in details:
+            return httpx.Response(200, json=details[suffix])
+        children = {
+            "/issues/1/comments": [comment],
+            "/issues/3/comments": [],
+            "/issues/2/comments": [{**comment, "id": 61002}],
+            "/pulls/2/reviews": [
+                {
+                    **comment,
+                    "id": 62002,
+                    "state": "APPROVED",
+                    "commit_id": "b" * 40,
+                    "submitted_at": stamp,
+                }
+            ],
+            "/pulls/2/comments": [
+                {
+                    **comment,
+                    "id": 63002,
+                    "pull_request_review_id": 62002,
+                    "commit_id": "b" * 40,
+                    "original_commit_id": "b" * 40,
+                    "path": "src/example.py",
+                    "side": "RIGHT",
+                    "line": 1,
+                }
+            ],
+            "/pulls/2/files": [
+                {
+                    "filename": "src/example.py",
+                    "sha": "b" * 40,
+                    "status": "modified",
+                    "additions": 1,
+                    "deletions": 0,
+                    "changes": 1,
+                }
+            ],
+        }
+        if suffix in children:
+            assert page == 1
+            return httpx.Response(200, json=children[suffix])
+        for attempt in (1, 2):
+            attempt_path = f"/actions/runs/81001/attempts/{attempt}"
+            conclusion = "failure" if attempt == 1 else "success"
+            if suffix == attempt_path:
+                return httpx.Response(
+                    200, json={**run, "run_attempt": attempt, "conclusion": conclusion}
+                )
+            if suffix == attempt_path + "/jobs":
+                assert page == 1
+                job = {
+                    "id": 91000 + attempt,
+                    "run_id": 81001,
+                    "run_attempt": attempt,
+                    "head_sha": "b" * 40,
+                    "name": "Acceptance tests",
+                    "status": "completed",
+                    "conclusion": conclusion,
+                    "started_at": stamp,
+                    "completed_at": stamp,
+                    "steps": [
+                        {
+                            "number": 1,
+                            "name": "Run checks",
+                            "status": "completed",
+                            "conclusion": conclusion,
+                            "started_at": stamp,
+                            "completed_at": stamp,
+                        }
+                    ],
+                }
+                return httpx.Response(200, json={"total_count": 1, "jobs": [job]})
+        raise AssertionError(f"Unexpected synthetic data endpoint: {suffix}")
 
 
 async def oauth_login(client: httpx.AsyncClient, identity: str) -> dict:

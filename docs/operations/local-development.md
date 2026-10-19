@@ -92,7 +92,9 @@ CI 使用隔离 PostgreSQL schema、合成 GitHub transport/秘密，无需真�
 
 ## 当前验收边界
 
-本地完整测试、容器与恢复演练的命令和实际结果见 [阶段验收](foundation-acceptance.md)。浏览器联调使用真实 API、Worker 和 PostgreSQL，仅 GitHub HTTP 使用合成 transport；测试端口 31847/31848 必须空闲。真实 App、私有仓库及公网 HTTPS 配置尚未提供，真实接入为**未执行**。
+一期测试与恢复证据见 [一期验收](foundation-acceptance.md)，新增数据同步、事实浏览、健康摘要和限流/重启证据见 [2A 验收与运维](data-foundation-acceptance.md)。浏览器联调使用真实 API、Worker 和 PostgreSQL，仅 GitHub HTTP 使用合成 transport；测试端口 31847/31848 必须空闲，真实后端用例串行运行。真实 App、私有仓库及公网 HTTPS 配置尚未提供，真实接入为 **NOT EXECUTED**。Workspace 在 2B 完成前不可用。
+
+接入仓库会自动请求同步；在仓库列表选择“查看事实与健康”。普通成员可刷新同步和健康；管理员可显式恢复预算耗尽的轮次、按 UTC 回填最多 365 天。后台 Worker 必须运行，GET 页面不会创建采集任务。Compose 显式传入 `.env.example` 所列 SYNC_* 设置；主机进程仍需 UV 的 `--env-file ../.env`。
 
 ## 固定认证期限与权限缓存（2026-10-13）
 

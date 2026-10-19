@@ -1,6 +1,6 @@
 # DevFlow
 
-面向单团队的私有仓库检查工作台：GitHub 登录、成员允许列表、仓库发现与接入、持久化访问检查、独立 Worker、REST/SSE 进度、撤权和审计。第一阶段仅执行只读 `repository.access_probe`，不调用模型、不克隆代码、不修改 GitHub 内容。
+面向单团队的私有仓库事实工作台：GitHub 登录、成员允许列表、仓库发现与接入、只读 Issue/PR/Actions 后台同步、可追溯健康事实、访问检查、撤权和审计。2A 保留一期私有检查及 REST/SSE 流程；不调用模型、不克隆代码、不修改 GitHub 内容。代码 Workspace 属于后续 2B，目前不可用。
 
 本地合成 GitHub 联调与真实 GitHub 验收分别记录。真实 App、私有仓库与外部域名尚未提供，真实接入和外部部署未执行；不能据离线测试认定整个平台全部验收完成。
 
@@ -11,6 +11,8 @@
 - [Compose 部署与启动顺序](docs/operations/deployment.md)
 - [备份与独立数据库恢复](docs/operations/backup-restore.md)
 - [阶段验收记录与未执行项目](docs/operations/foundation-acceptance.md)
+- [2A 数据同步验收与运维](docs/operations/data-foundation-acceptance.md)
+- [2A 数据基础决策](docs/operations/data-foundation-decisions.md)
 
 ## 本地启动
 
@@ -59,11 +61,13 @@ Pop-Location
 
 后端和真实浏览器联调只使用 `devflow_test` 数据库/用户及随机独立 schema，结束后清理自身 schema。`TEST_DATABASE_URL` 仅允许上述专用 loopback 数据库，不能指定生产库。全量 Playwright 包含页面交互测试和 `full-flow.spec.ts`：后者启动真实 API、独立 Worker 任务与 PostgreSQL，仅替换 GitHub HTTP transport；OAuth state/cookie、会话、权限及作业持久化均使用生产实现。浏览器服务使用 31847/31848 两个本地端口，不需要真实 GitHub 秘密。
 
+`data-flow.spec.ts` 同样读取真实 API，验证收集的 Issue/PR/CI、缺失补丁、健康事实及仓库撤权后的缓存清理。真实栈用例串行运行，避免两个自有 helper 争用 31848；各 helper 拥有自己的 schema，正常停止、父进程 EOF 和启动失败都清理自身资源。后端 `test_data_sync_flow.py` 还验证分页限流、正常 Worker 重启后续接与不完整轮次保留旧水位。该重启证据是普通 Worker 生命周期，不是强杀进程崩溃验收。
+
 仅运行跨模块验收：
 
 ```powershell
-uv --directory backend run pytest tests/integration/test_full_flow.py -q
-npm.cmd --prefix frontend run test:e2e -- tests/full-flow.spec.ts
+uv --directory backend run --no-sync pytest tests/integration/test_full_flow.py tests/integration/test_data_sync_flow.py -q
+npm.cmd --prefix frontend run test:e2e -- tests/full-flow.spec.ts tests/data-flow.spec.ts
 ```
 
 停止测试数据库使用 `docker compose -p devflow-test -f infra/compose.test.yaml stop`，保留测试卷。UV 缓存受限时可使用仓库内 `.cache/uv`；浏览器缓存可通过 `PLAYWRIGHT_BROWSERS_PATH` 指定本机目录。

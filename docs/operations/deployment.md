@@ -1,6 +1,6 @@
 # 部署与升级
 
-本文提供 Linux Compose 生产配置及 localhost 开发覆盖的操作步骤。本地执行证据及适用边界见 [阶段验收](foundation-acceptance.md)；真实 App 登录、公网 TLS 签发及外部部署尚未执行。
+本文提供 Linux Compose 生产配置及 localhost 开发覆盖的操作步骤。一期执行证据见 [一期验收](foundation-acceptance.md)，新增同步、健康和镜像/恢复证据见 [2A 验收](data-foundation-acceptance.md)；真实 App 登录、公网 TLS 签发及外部部署为 **NOT EXECUTED**。
 
 ## 输入与秘密文件
 
@@ -91,3 +91,11 @@ Caddy 的 `http.log.error` 即使关闭访问日志也会在上游故障时记�
 4. 用 `up -d --force-recreate` 重建本项目服务，检查 migrate、readiness、登录和一次只读检查。
 
 应用回退只在旧镜像仍兼容当前 schema 时使用旧 tag，并通过 `up -d --no-build` 启动。破坏性迁移需要恢复到**独立数据库**验证，不能只切回镜像、盲目降级 schema 或覆盖生产卷。常规停止用 `stop`；不要 `down -v`。禁止为本项目清理而执行全局 `docker system prune` 或操作其他项目容器/卷。
+
+## 2A 同步与迁移操作
+
+2A 的迁移 head 是 `0007_health_requests`，含规范化事实、同步游标、内容事件与独立健康请求。旧一期镜像与此 schema 不保证兼容。迁移 0005/0006/0007 的降级保护会拒绝丢弃已有二期证据；空库往返测试不代表含数据生产库可以降级。回退前备份数据库及对应密钥，停止本项目写入者，在独立数据库恢复并使用匹配源码/镜像和 revision 验证；保留当前卷作为恢复依据。此次 2A 只执行新库迁移/服务恢复冒烟，没有新增含数据备份恢复或生产降级证据。
+
+API、Worker、migrate 共用锁定后端镜像；`docker compose build api frontend gateway` 同时准备 Worker 所用镜像，不添加外部服务。SYNC_* 设置来自 `.env.example`，所有后端进程保持一致。单安装请求串行、单仓库一个执行单元，默认全局两个同步单元；通用 Worker 并发四不等于四个事实采集单元。每单元最多五次 HTTP（含安装令牌），120 秒，单次 HTTP10 秒；整轮10000请求/24小时。保持已批准上限，缩小预算应先在隔离项目验证。
+
+处理限流、源权限不足、预算恢复及覆盖缺口的具体步骤见 [2A 运维](data-foundation-acceptance.md#同步恢复与证据判读)。部署升级检查应增加一次真实事实读取及健康覆盖检查；存活、容器 Running 或同步 completed 都不能证明数据完整。

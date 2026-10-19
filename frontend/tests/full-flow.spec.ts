@@ -65,7 +65,7 @@ test("real OAuth, allowlist, repository, Worker result, persisted events and rev
     expect([...body.matchAll(/^data:\s*(.+)$/gm)].map(match => JSON.parse(match[1]).status)).toEqual(["queued", "running", "succeeded"]);
 
     await page.getByRole("link", { name: "审计日志" }).click();
-    await expect(page.getByText("job.succeeded", { exact: true })).toBeVisible();
+    await expect(page.getByRole("row").filter({ hasText: job.id }).getByRole("cell", { name: "job.succeeded", exact: true })).toBeVisible();
     await page.getByRole("link", { name: "成员管理" }).click();
     await page.getByRole("button", { name: "停用 acceptance-member" }).click();
     await expect(page.getByRole("button", { name: "启用 acceptance-member" })).toBeVisible();
