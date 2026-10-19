@@ -58,11 +58,20 @@ function FactListPage({ resource, endpoint, filters }: { resource: Stream; endpo
   </>}<Pagination page={cursors.length + 1} busy={query.isFetching} hasNext={query.isSuccess && !!query.data.next_cursor} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (query.data?.next_cursor) setCursors([...cursors, query.data.next_cursor]); }} /></>;
 }
 const names: Record<CollectionKind, string> = { comments: "评论", reviews: "评审", review_comments: "行内评论", files: "文件与补丁", jobs: "任务", attempts: "尝试历史" };
-function FactCollection({ endpoint, resource, identity, kind }: { endpoint: string; resource: Stream; identity: string; kind: CollectionKind }) {
+function FactCollection({ endpoint, resource, identity, kind, parent, reconfirm }: { endpoint: string; resource: Stream; identity: string; kind: CollectionKind; parent: FactView; reconfirm: () => Promise<boolean> }) {
   const scope = useRepository(); const [cursors, setCursors] = useState<string[]>([]); const cursor = cursors.at(-1);
+  const [confirming, setConfirming] = useState(false);
   const query = useRepositoryQuery<FactPage>([resource, identity, kind, cursor ?? ""], endpoint, { collection: kind, limit: "30", ...(cursor ? { cursor } : {}) });
-  return <section className="fact-collection" aria-label={names[kind]}><h3>{names[kind]}</h3>{query.isPending ? <p role="status">正在加载{names[kind]}…</p> : query.isError ? <FactError error={query.error} retry={() => void query.refetch()} restart={() => setCursors([])} /> : <><CollectionEvidence value={query.data.collection} empty={!query.data.items.length} />{query.data.items.map(item => <div key={item.id}>{item.kind === "ci_run" && <Link href={`/repositories/${scope.repository.id}/actions/${item.source_id}/attempts/${item.payload.attempt}`}>打开 Attempt {item.payload.attempt}</Link>}<FactRecord item={item} /></div>)}</>}
-    <Pagination page={cursors.length + 1} busy={query.isFetching} hasNext={query.isSuccess && !!query.data.next_cursor} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (query.data?.next_cursor) setCursors([...cursors, query.data.next_cursor]); }} />
+  const filesParent = kind === "files" && parent.kind === "pull" ? parent.payload : null;
+  const mismatch = !!(filesParent && query.data && (query.data.collection?.collection !== "files" || query.data.collection.version_key !== `${filesParent.base_sha}:${filesParent.head_sha}` || query.data.items.some(item => item.kind !== "pr_file" || item.payload.base_sha !== filesParent.base_sha || item.payload.head_sha !== filesParent.head_sha)));
+  async function confirm(restart: boolean) {
+    if (confirming) return;
+    setConfirming(true);
+    try { if (await reconfirm() && restart) setCursors([]); }
+    finally { setConfirming(false); }
+  }
+  return <section className="fact-collection" aria-label={names[kind]}><h3>{names[kind]}</h3>{query.isPending ? <p role="status">正在加载{names[kind]}…</p> : query.isError ? <FactError error={query.error} retry={() => void query.refetch()} restart={() => { if (filesParent) void confirm(true); else setCursors([]); }} /> : mismatch ? <><p role="alert" className="banner error">PR 文件版本与当前显示的 Base / Head 不一致，重新确认 PR 版本后查看。</p><button disabled={confirming} onClick={() => void confirm(false)}>重新确认 PR 版本</button></> : <><CollectionEvidence value={query.data.collection} empty={!query.data.items.length} />{query.data.items.map(item => <div key={item.id}>{item.kind === "ci_run" && <Link href={`/repositories/${scope.repository.id}/actions/${item.source_id}/attempts/${item.payload.attempt}`}>打开 Attempt {item.payload.attempt}</Link>}<FactRecord item={item} /></div>)}</>}
+    <Pagination page={cursors.length + 1} busy={query.isFetching || confirming || mismatch} hasNext={query.isSuccess && !mismatch && !!query.data.next_cursor} previous={() => setCursors(cursors.slice(0, -1))} next={() => { if (query.data?.next_cursor) setCursors([...cursors, query.data.next_cursor]); }} />
   </section>;
 }
 export function FactDetails({ resource, endpoint, identity, collections }: { resource: Stream; endpoint: string; identity: string; collections: CollectionKind[] }) {
@@ -70,7 +79,7 @@ export function FactDetails({ resource, endpoint, identity, collections }: { res
   const item = query.error instanceof ApiError && query.error.code === "fact_not_found" ? undefined : query.data?.item;
   const version = item ? `${identity}:${item.version_key}:${item.observed_at}:${item.kind === "pull" ? `${item.payload.base_sha}:${item.payload.head_sha}` : ""}` : identity;
   return <section aria-label="事实详情"><button disabled={query.isFetching} onClick={() => void query.refetch()}>刷新事实</button>
-    {query.isPending ? <p role="status">正在加载事实…</p> : <>{query.isError && <FactError error={query.error} retry={() => void query.refetch()} />}{item && <><CoverageEvidence coverage={query.data!.coverage} /><FactRecord item={item} heading />{collections.map(kind => <FactCollection key={`${version}:${kind}`} identity={version} endpoint={endpoint} resource={resource} kind={kind} />)}</>}</>}
+    {query.isPending ? <p role="status">正在加载事实…</p> : <>{query.isError && <FactError error={query.error} retry={() => void query.refetch()} />}{item && <><CoverageEvidence coverage={query.data!.coverage} /><FactRecord item={item} heading />{collections.map(kind => <FactCollection key={`${version}:${kind}`} identity={version} endpoint={endpoint} resource={resource} kind={kind} parent={item} reconfirm={async () => (await query.refetch()).isSuccess} />)}</>}</>}
   </section>;
 }
 export function Issues({ number }: { number?: string }) {

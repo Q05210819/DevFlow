@@ -58,21 +58,31 @@ export function useRepositoryPolling(prefix: readonly string[], access: ReturnTy
   const recover = useRef(() => {});
   useEffect(() => {
     if (!enabled) return;
-    let live = true, fetching = false, failures = 0, polled = false;
+    let live = true, fetching = false, failures = 0, polled = false, stopped = false, epoch = 0;
     let deadline = Date.now() + 300_000, next = Date.now() + 2000;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
     const queries = () => client.getQueryCache().findAll({ queryKey: prefix }).filter(query => query.isActive() && query.meta?.poll);
+    function pause() {
+      if (!live || !access.active || access.denied) return;
+      stopped = true; epoch++; fetching = false;
+      clearTimeout(timer); clearTimeout(watchdog); watchdog = undefined;
+      setPaused(true);
+      for (const query of queries()) void client.cancelQueries({ queryKey: query.queryKey, exact: true });
+    }
     function schedule() {
       clearTimeout(timer);
-      if (!live || fetching || access.denied || !access.active || document.visibilityState !== "visible") return;
-      if (Date.now() >= deadline || failures >= 3) { setPaused(true); return; }
+      if (!live || stopped || fetching || access.denied || !access.active || document.visibilityState !== "visible") return;
+      if (Date.now() >= deadline || failures >= 3) { pause(); return; }
       const active = queries();
       if (!polled) failures = active.some(query => query.state.error && (!(query.state.error instanceof ApiError) || query.state.error.status >= 500)) ? 1 : 0;
       const pending = active.some(query => {
         const data = query.state.data as { status?: string; refresh_status?: string } | undefined;
         return pendingStatus(data?.status ?? data?.refresh_status);
       });
-      if (!pending) return;
+      if (!pending) { clearTimeout(watchdog); watchdog = undefined; return; }
+      // This deadline survives an in-flight fetch; query-cache events may clear the poll timer.
+      watchdog ??= setTimeout(pause, Math.max(0, deadline - Date.now()));
       let floor = Math.max(next, access.retryAt);
       for (const query of active) {
         const data = query.state.data as { retry_at?: string | null } | undefined;
@@ -82,11 +92,13 @@ export function useRepositoryPolling(prefix: readonly string[], access: ReturnTy
       timer = setTimeout(() => void tick(), Math.max(0, Math.min(deadline, floor) - Date.now()));
     }
     async function tick() {
-      if (Date.now() >= deadline || failures >= 3) { setPaused(true); return; }
-      if (document.visibilityState !== "visible" || !live || access.denied) return;
+      if (!live || stopped || access.denied) return;
+      if (Date.now() >= deadline || failures >= 3) { pause(); return; }
+      if (document.visibilityState !== "visible") return;
       fetching = true; polled = true;
+      const currentEpoch = epoch;
       const results = await Promise.allSettled(queries().map(query => client.refetchQueries({ queryKey: query.queryKey, exact: true }, { throwOnError: true })));
-      if (!live) return;
+      if (!live || stopped || currentEpoch !== epoch) return;
       const transportError = results.some(result => result.status === "rejected" && (!(result.reason instanceof ApiError) || result.reason.status >= 500));
       failures = transportError ? failures + 1 : 0;
       fetching = false; next = Date.now() + 2000; schedule();
@@ -97,12 +109,12 @@ export function useRepositoryPolling(prefix: readonly string[], access: ReturnTy
         for (const query of queries()) void client.cancelQueries({ queryKey: query.queryKey, exact: true });
       } else schedule();
     }
-    recover.current = () => { failures = 0; polled = true; deadline = Date.now() + 300_000; next = Date.now() + 2000; setPaused(false); schedule(); };
+    recover.current = () => { epoch++; stopped = false; fetching = false; failures = 0; polled = true; deadline = Date.now() + 300_000; next = Date.now() + 2000; setPaused(false); schedule(); };
     const unsubscribe = client.getQueryCache().subscribe(schedule);
     const unsubscribeAccess = access.subscribe(schedule);
     document.addEventListener("visibilitychange", visibility);
     schedule();
-    return () => { live = false; clearTimeout(timer); unsubscribe(); unsubscribeAccess(); document.removeEventListener("visibilitychange", visibility); recover.current = () => {}; };
+    return () => { live = false; epoch++; clearTimeout(timer); clearTimeout(watchdog); unsubscribe(); unsubscribeAccess(); document.removeEventListener("visibilitychange", visibility); recover.current = () => {}; };
   }, [client, prefix, access, enabled]);
   return { paused, recover: () => recover.current() };
 }

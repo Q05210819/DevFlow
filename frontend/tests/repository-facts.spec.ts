@@ -129,6 +129,53 @@ test("PR child cursor resets with base/head version and old reviews keep their c
   expect(mixed).toBe(0); expect(await page.evaluate(() => (window as unknown as { unsafe?: number }).unsafe)).toBeUndefined();
 });
 
+for (const mismatch of ["collection", "payload"]) {
+  test(`PR first files response rejects a ${mismatch} version newer than the displayed parent`, async ({ page }) => {
+    await facts(page); const newer = "c".repeat(40); let confirmed = false; let parents = 0;
+    await page.route(`**/api/v1/repositories/${repository.id}/pulls/18**`, route => {
+      const kind = new URL(route.request().url()).searchParams.get("collection");
+      if (!kind) { parents++; return route.fulfill({ json: { item: { ...pull, payload: { ...pull.payload, head_sha: confirmed ? newer : head } }, collections: [], coverage: { ...coverage, stream: "pulls" } } }); }
+      const file = { ...issue, kind: "pr_file", source_id: 502, number: null, version_key: `${base}:${newer}:${"a".repeat(64)}`, source_url: null, payload: { normalization_reasons: [], base_sha: base, head_sha: newer, filename: "new-head-only.ts", previous_filename: null, sha: null, status: "modified", additions: 1, deletions: 0, changes: 1, patch: "+new head", patch_status: "available" } };
+      return route.fulfill({ json: { items: kind === "files" ? [file] : [], next_cursor: null, coverage: { ...coverage, stream: "pulls" }, collection: { ...collection, collection: kind, version_key: kind === "files" ? `${base}:${mismatch === "payload" && !confirmed ? head : newer}` : "", complete: true, reason: null } } });
+    });
+    await page.goto(`/repositories/${repository.id}/pulls/18`);
+    const files = page.getByRole("region", { name: "文件与补丁" });
+    await expect(files.getByRole("alert")).toContainText("版本");
+    await expect(files.getByText("new-head-only.ts", { exact: true })).toHaveCount(0);
+    const before = parents;
+    await files.getByRole("button", { name: "重新确认 PR 版本" }).click();
+    await expect.poll(() => parents).toBe(before + 1);
+    await expect(files.getByRole("button", { name: "重新确认 PR 版本" })).toBeEnabled();
+    await expect(files.getByText("new-head-only.ts", { exact: true })).toHaveCount(0);
+    confirmed = true; await files.getByRole("button", { name: "重新确认 PR 版本" }).click();
+    await expect(page.getByRole("region", { name: "事实详情" }).getByText(newer, { exact: true }).first()).toBeVisible();
+    await expect(files.getByText("new-head-only.ts", { exact: true })).toBeVisible();
+    expect(parents).toBe(before + 2);
+  });
+}
+
+test("PR invalid-cursor restart reconfirms the parent before accepting the new file version", async ({ page }) => {
+  await facts(page); const newer = "c".repeat(40); let advanced = false; let parents = 0;
+  await page.route(`**/api/v1/repositories/${repository.id}/pulls/18**`, route => {
+    const params = new URL(route.request().url()).searchParams, kind = params.get("collection");
+    if (!kind) { parents++; return route.fulfill({ json: { item: { ...pull, payload: { ...pull.payload, head_sha: advanced ? newer : head } }, collections: [], coverage: { ...coverage, stream: "pulls" } } }); }
+    if (params.has("cursor")) { advanced = true; return fail(route, "invalid_cursor", 400); }
+    const selectedHead = advanced ? newer : head;
+    const file = { ...issue, kind: "pr_file", source_id: 502, number: null, version_key: `${base}:${selectedHead}:${"a".repeat(64)}`, source_url: null, payload: { normalization_reasons: [], base_sha: base, head_sha: selectedHead, filename: advanced ? "restarted-new-head.ts" : "first-old-head.ts", previous_filename: null, sha: null, status: "modified", additions: 1, deletions: 0, changes: 1, patch: null, patch_status: "missing" } };
+    return route.fulfill({ json: { items: kind === "files" ? [file] : [], next_cursor: kind === "files" && !advanced ? "old-head-cursor" : null, coverage: { ...coverage, stream: "pulls" }, collection: { ...collection, collection: kind, version_key: kind === "files" ? `${base}:${selectedHead}` : "", complete: false, reason: "partial" } } });
+  });
+  await page.goto(`/repositories/${repository.id}/pulls/18`);
+  const files = page.getByRole("region", { name: "文件与补丁" });
+  await expect(files.getByText("first-old-head.ts", { exact: true })).toBeVisible();
+  await files.getByRole("button", { name: "下一页" }).click();
+  await expect(files.getByRole("alert")).toContainText("分页版本已变化");
+  const before = parents; await files.getByRole("button", { name: "返回第一页" }).click();
+  await expect.poll(() => parents).toBeGreaterThan(before);
+  await expect(page.getByRole("region", { name: "事实详情" }).getByText(newer, { exact: true }).first()).toBeVisible();
+  await expect(files.getByText("restarted-new-head.ts", { exact: true })).toBeVisible();
+  await expect(files.getByText("first-old-head.ts", { exact: true })).toHaveCount(0);
+});
+
 test("repository switch rejects a held old repository response", async ({ page }) => {
   await facts(page); const other = { ...repository, id: "55555555-5555-4555-8555-555555555555", full_name: "team/other-app" };
   let hold = false; let release!: () => void; let waiting!: () => void; const started = new Promise<void>(resolve => waiting = resolve);

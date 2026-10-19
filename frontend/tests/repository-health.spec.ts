@@ -27,6 +27,9 @@ test("sync transport retry preserves logical UUID and CSRF; successful new reque
     return keys.length === 1 ? route.abort() : route.fulfill({ status: 202, json: sync });
   });
   await page.goto(`/repositories/${repository.id}`);
+  await expect(page.getByRole("button", { name: "刷新同步", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "恢复同步", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "管理员回填" })).toHaveCount(0);
   await page.getByRole("button", { name: "刷新同步", exact: true }).click();
   await expect(page.getByRole("main").getByRole("alert")).toBeVisible();
   await page.getByRole("button", { name: "重试同步提交" }).click();
@@ -44,8 +47,20 @@ test("admin backfill is explicit UTC, validates bounds and resume is admin-only"
   });
   await page.route(`**/api/v1/repositories/${repository.id}/sync/refresh`, route => { expect(route.request().postDataJSON()).toEqual({ resume: true }); return route.fulfill({ status: 202, json: sync }); });
   await page.goto(`/repositories/${repository.id}`);
+  for (const [start, end] of [["2026-10-03T00:00", "2026-10-02T00:00"], ["2024-01-01T00:00", "2026-10-02T00:00"], ["2999-01-01T00:00", "2999-01-02T00:00"]]) {
+    await page.getByLabel("开始时间（UTC）").fill(start);
+    await page.getByLabel("结束时间（UTC）").fill(end);
+    await page.getByRole("button", { name: "提交回填" }).click();
+    await expect(page.getByRole("region", { name: "管理员回填" }).getByRole("alert")).toContainText("请检查 UTC");
+    expect(bodies).toHaveLength(0);
+  }
   await page.getByLabel("开始时间（UTC）").fill("2026-10-01T00:00");
   await page.getByLabel("结束时间（UTC）").fill("2026-10-02T00:00");
+  for (const stream of ["issues", "pulls", "actions"]) await page.getByLabel(stream, { exact: true }).uncheck();
+  await page.getByRole("button", { name: "提交回填" }).click();
+  await expect(page.getByRole("region", { name: "管理员回填" }).getByRole("alert")).toContainText("采集流");
+  expect(bodies).toHaveLength(0);
+  for (const stream of ["issues", "pulls", "actions"]) await page.getByLabel(stream, { exact: true }).check();
   await page.getByRole("button", { name: "提交回填" }).click();
   await expect(page.getByRole("button", { name: "重试回填提交" })).toBeVisible();
   await page.getByLabel("结束时间（UTC）").fill("2026-10-03T00:00");
@@ -90,6 +105,7 @@ test("hidden pages pause polling and departing cancels further work", async ({ p
   await page.clock.install({ time: new Date("2026-10-15T00:00:00Z") }); await page.clock.pauseAt(new Date("2026-10-15T00:00:01Z")); await facts(page); let calls = 0;
   await page.route(`**/api/v1/repositories/${repository.id}/sync`, route => { calls++; return route.fulfill({ json: { ...sync, status: "running" } }); });
   await page.goto(`/repositories/${repository.id}`); await expect.poll(async () => { await page.clock.runFor(1); return calls; }).toBe(1);
+  await expect.poll(async () => { await page.clock.runFor(1); return page.getByRole("region", { name: "同步状态" }).getByRole("status").textContent(); }).toContain("正在同步");
   await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" }); document.dispatchEvent(new Event("visibilitychange")); });
   await page.clock.fastForward(10_000); expect(calls).toBe(1);
   await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }); document.dispatchEvent(new Event("visibilitychange")); });
@@ -129,3 +145,37 @@ test("visibility cancellation does not count as a transport failure", async ({ p
   await expect(page.getByRole("button", { name: "恢复状态轮询" })).toHaveCount(0);
   hold = false; await page.clock.fastForward(2000); await expect.poll(async () => { await page.clock.runFor(1); return calls; }).toBe(5);
 });
+
+for (const resource of ["sync", "health"]) {
+  test(`five-minute watchdog cancels a held ${resource} poll and recovery respects its retry floor`, async ({ page }) => {
+    await page.clock.install({ time: new Date("2026-10-15T00:00:00Z") }); await page.clock.pauseAt(new Date("2026-10-15T00:00:01Z")); await facts(page);
+    let calls = 0, aborted = 0; let hold = false, held = false, recovered = false; let release!: () => void;
+    const path = `/api/v1/repositories/${repository.id}/${resource}`, floor = "2026-10-15T00:05:20Z";
+    page.on("requestfailed", request => { if (new URL(request.url()).pathname === path) aborted++; });
+    await page.route(`**${path}`, async route => {
+      calls++; const shouldHold = hold && !held;
+      if (shouldHold) { held = true; await new Promise<void>(resolve => release = resolve); }
+      const result = resource === "sync" ? { ...sync, status: recovered || shouldHold ? "completed" : "running", processed_sequence: shouldHold ? 999 : 1 } : { ...health, refresh_status: recovered || shouldHold ? "completed" : "running", snapshot: { ...health.snapshot, generated_at: shouldHold ? "late-held-time" : stamp } };
+      await route.fulfill({ json: result }).catch(() => {});
+    });
+    await page.route(`**${path}/refresh`, route => route.fulfill({ status: 202, json: resource === "sync" ? { ...sync, status: "retry_wait", retry_at: floor } : { ...health, refresh_status: "retry_wait", retry_at: floor } }));
+    await page.goto(`/repositories/${repository.id}`);
+    await expect.poll(async () => { await page.clock.runFor(1); return page.getByRole("region", { name: "健康事实" }).getByText(stamp, { exact: true }).count(); }).toBeGreaterThan(0); await page.clock.runFor(10);
+    const initial = calls; hold = true;
+    await page.clock.fastForward(2000); await expect.poll(async () => { await page.clock.runFor(1); return held; }).toBe(true); aborted = 0;
+    await page.getByRole("button", { name: resource === "sync" ? "刷新同步" : "刷新健康摘要", exact: true }).click();
+    await expect.poll(async () => { await page.clock.runFor(1); return page.getByText(floor, { exact: false }).count(); }).toBeGreaterThan(0);
+    await page.clock.fastForward(300_000); await page.clock.runFor(10);
+    await expect(page.getByRole("button", { name: "恢复状态轮询" })).toBeVisible();
+    await expect.poll(() => aborted).toBeGreaterThan(0);
+    release(); await page.clock.runFor(10);
+    await expect(page.getByRole("button", { name: "恢复状态轮询" })).toBeVisible();
+    await expect(page.getByText("late-held-time", { exact: false })).toHaveCount(0);
+    await expect(page.getByText("已处理 999", { exact: false })).toHaveCount(0);
+    recovered = true; await page.getByRole("button", { name: "恢复状态轮询" }).click();
+    const remaining = Date.parse(floor) - await page.evaluate(() => Date.now());
+    await page.clock.fastForward(remaining - 1); expect(calls).toBe(initial + 1);
+    await page.clock.fastForward(1); await expect.poll(async () => { await page.clock.runFor(1); return calls; }).toBe(initial + 2);
+    await expect(page.getByRole("region", { name: "健康事实" }).getByText(stamp, { exact: true }).first()).toBeVisible();
+  });
+}

@@ -26,7 +26,7 @@ export async function facts(page: Page, role = "member") {
     const stream = path.includes("/pulls") ? "pulls" : path.includes("/actions/") ? "actions" : "issues";
     const item = stream === "pulls" ? pull : stream === "actions" ? run : issue;
     const cov = { ...coverage, stream };
-    if (url.searchParams.has("collection")) return route.fulfill({ json: { items: [], next_cursor: null, coverage: cov, collection: { ...collection, collection: url.searchParams.get("collection") } } });
+    if (url.searchParams.has("collection")) return route.fulfill({ json: { items: [], next_cursor: null, coverage: cov, collection: { ...collection, collection: url.searchParams.get("collection"), version_key: url.searchParams.get("collection") === "files" ? `${base}:${head}` : "" } } });
     if (/\/(17|18|attempts\/2)$/.test(path)) return route.fulfill({ json: { item, collections: [], coverage: cov } });
     return route.fulfill({ json: { items: [item], next_cursor: null, coverage: cov, collection: null } });
   });
