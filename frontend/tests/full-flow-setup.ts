@@ -3,12 +3,13 @@ import path from "node:path";
 
 export const backendPort = 31848;
 
-export async function startFullFlowBackend(origin: string) {
+export async function startFullFlowBackend(origin: string, scenario: "facts" | "workspace" = "facts") {
   const root = path.resolve(__dirname, "../..");
   const child = spawn("uv", [
     "--cache-dir", path.join(root, ".cache/uv"), "--directory", path.join(root, "backend"),
     "run", "--no-sync", "python", "tests/support/browser_server.py",
     "--port", String(backendPort), "--origin", origin,
+    "--scenario", scenario,
   ], { cwd: root, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   let spawnError: Error | undefined;

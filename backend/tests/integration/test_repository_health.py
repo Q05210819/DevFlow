@@ -15,6 +15,12 @@ from devflow.sync.models import RepositorySync
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture
+def tmp_path(workspace_tmp_path):
+    """Opt this affected module into the owned Windows fixture (R15)."""
+    return workspace_tmp_path
+
+
 async def test_health_request_is_durable_idempotent_and_independent(repo_env):
     env = repo_env
     repo = await env.service.register(env.actor, 11, 101)

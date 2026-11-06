@@ -545,11 +545,11 @@ async def test_user_revocation_cannot_be_undone_by_late_refresh(auth_env):
 
 
 async def test_signed_webhook_uses_real_factory_without_cookie_or_csrf(
-    migrated_database, tmp_path
+    migrated_database, workspace_tmp_path
 ):
     from devflow.app import create_app
 
-    secret_file = tmp_path / "webhook-secret"
+    secret_file = workspace_tmp_path / "webhook-secret"
     secret_file.write_bytes(SECRET)
     settings = migrated_database[0].model_copy(
         update={"github_webhook_secret_file": secret_file}
@@ -586,7 +586,7 @@ async def test_signed_webhook_uses_real_factory_without_cookie_or_csrf(
 
 
 @pytest_asyncio.fixture
-async def policy_env(auth_env, tmp_path):
+async def policy_env(auth_env, workspace_tmp_path):
     from devflow.db import create_session_factory
     from devflow.github.client import GitHubClient
     from devflow.github.credentials import CredentialService
@@ -596,7 +596,7 @@ async def policy_env(auth_env, tmp_path):
     await member(auth_env, role="admin")
     issue = await login(auth_env)
     actor = await auth_env.service.resolve_session(issue.raw_token.get_secret_value())
-    key_file = tmp_path / "app-private-key"
+    key_file = workspace_tmp_path / "app-private-key"
     key_file.write_bytes(
         rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
             serialization.Encoding.PEM,
@@ -763,11 +763,11 @@ async def test_restore_requires_explicit_verified_registration(policy_env):
 
 
 async def test_database_error_returns_503_and_retry_is_not_reserved(
-    db_factory, migrated_database, tmp_path
+    db_factory, migrated_database, workspace_tmp_path
 ):
     from devflow.app import create_app
 
-    secret_file = tmp_path / "webhook-secret"
+    secret_file = workspace_tmp_path / "webhook-secret"
     secret_file.write_bytes(SECRET)
     app = create_app(
         migrated_database[0].model_copy(

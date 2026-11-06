@@ -70,6 +70,8 @@ async def test_two_workers_claim_once(job_env):
 
     env = job_env
     job = await submit(env)
+    # This checks concurrent ownership, not host/PG wall-clock convergence.
+    await make_due(env, job.id)
     queue = Queue(env.factory)
     leases = await asyncio.gather(queue.claim(uuid4()), queue.claim(uuid4()))
     valid_leases = [lease for lease in leases if lease is not None]
@@ -392,3 +394,9 @@ async def test_queue_honors_persisted_lower_attempt_budget(job_env):
     assert state.attempt == state.max_attempts == 1
     assert state.status == "failed"
     assert await queue.claim(uuid4()) is None
+
+
+@pytest.fixture
+def tmp_path(workspace_tmp_path):
+    """Opt in to newly owned workspace files without changing Windows ACLs."""
+    return workspace_tmp_path

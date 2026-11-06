@@ -33,6 +33,11 @@ from devflow.github.client import GitHubClient
 from devflow.jobs.models import Job, RunEvent
 
 
+@pytest.fixture
+def tmp_path(workspace_tmp_path):
+    return workspace_tmp_path
+
+
 @pytest.mark.parametrize(
     ("origin", "fails"),
     [("http://invalid.example", True), ("http://localhost:3000", False)],

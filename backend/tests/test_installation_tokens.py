@@ -14,9 +14,9 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-def github_settings(settings_factory, tmp_path):
+def github_settings(settings_factory, workspace_tmp_path):
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    key_file = tmp_path / "private-key"
+    key_file = workspace_tmp_path / "private-key"
     key_file.write_bytes(
         private.private_bytes(
             serialization.Encoding.PEM,

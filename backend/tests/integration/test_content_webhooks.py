@@ -357,6 +357,29 @@ async def test_rebinding_rebuilds_retained_backfill_checkpoint(repo_env):
     await deliver(env, "repository", action="renamed")
     await env.service.register(env.actor, 11, 101)
     fresh = await queue.claim(uuid4())
+    if fresh is None:
+        async with env.factory() as db:
+            state = await db.get(RepositorySync, repo.id)
+            identity = state.active_job_id if state else None
+            job = await db.get(Job, identity) if identity else None
+            now = await db.scalar(select(func.clock_timestamp()))
+            assert fresh is not None, json.dumps(
+                {
+                    "active_job_id": identity,
+                    "database_time": now,
+                    "job": {
+                        "id": job.id,
+                        "status": job.status,
+                        "available_at": job.available_at,
+                        "attempt": job.attempt,
+                        "lease_owner": job.lease_owner,
+                        "lease_expires_at": job.lease_expires_at,
+                    }
+                    if job
+                    else None,
+                },
+                default=str,
+            )
     current = await sync.snapshot(fresh)
     assert current.cursor.page == 1 and current.cursor.mode == "backfill"
     assert (

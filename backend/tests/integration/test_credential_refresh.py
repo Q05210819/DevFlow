@@ -31,8 +31,8 @@ def cipher():
 
 
 @pytest.fixture
-def github_settings(settings_factory, tmp_path):
-    secret = tmp_path / "client-secret"
+def github_settings(settings_factory, workspace_tmp_path):
+    secret = workspace_tmp_path / "client-secret"
     secret.write_text("synthetic-client-secret")
     return settings_factory(
         github_client_id="client-id", github_client_secret_file=secret

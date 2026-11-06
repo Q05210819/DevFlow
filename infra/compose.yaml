@@ -28,6 +28,13 @@ x-backend: &backend
     SYNC_HISTORY_DAYS: ${SYNC_HISTORY_DAYS:-90}
     SYNC_ACTIONS_DAYS: ${SYNC_ACTIONS_DAYS:-30}
     SYNC_OVERLAP_SECONDS: ${SYNC_OVERLAP_SECONDS:-300}
+    WORKSPACE_GIT_EXECUTABLE: /usr/bin/git
+    WORKSPACE_CACHE_ROOT: /var/lib/devflow/workspace
+    WORKSPACE_REPOSITORY_BYTES: ${WORKSPACE_REPOSITORY_BYTES:-2147483648}
+    WORKSPACE_TOTAL_BYTES: ${WORKSPACE_TOTAL_BYTES:-21474836480}
+    WORKSPACE_UNUSED_DAYS: ${WORKSPACE_UNUSED_DAYS:-7}
+    WORKSPACE_ORPHAN_GRACE_SECONDS: ${WORKSPACE_ORPHAN_GRACE_SECONDS:-600}
+    MILVUS_URI: http://milvus:19530
   secrets:
     - database_url
     - github_client_secret
@@ -59,6 +66,87 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 
+  # Milvus 2.6 standalone keeps its metadata in etcd, segments in MinIO and
+  # query data in its own volume. All three are project-private; no host port
+  # is published in production.
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - milvus-etcd:/etcd
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+
+  minio:
+    image: milvusdb/minio:RELEASE.2024-12-18T13-15-44Z@sha256:1dce27c494a16bae114774f1cec295493f3613142713130c2d22dd5696be6ad3
+    environment:
+      # MinIO reads its root credentials from mounted files so they never
+      # appear in tracked Compose or in `docker inspect` static environment.
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_secret_key
+    secrets:
+      - minio_access_key
+      - minio_secret_key
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - milvus-minio:/minio_data
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+
+  milvus:
+    image: milvusdb/milvus:v2.6.26@sha256:f43e0cd0c9912c35379c349f7f3a3a806b9308462d43d1bfa18d007c6642d693
+    # Milvus only accepts plain MinIO credential environment variables (it has
+    # no MINIO_ACCESS_KEY_ID_FILE support), so the small command wrapper reads
+    # the same mounted secret files as MinIO before exec'ing the server.
+    command:
+      - sh
+      - -eu
+      - -c
+      - |
+        export MINIO_ACCESS_KEY_ID="$$(cat /run/secrets/minio_access_key)"
+        export MINIO_SECRET_ACCESS_KEY="$$(cat /run/secrets/minio_secret_key)"
+        exec milvus run standalone
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_REGION: us-east-1
+    secrets:
+      - minio_access_key
+      - minio_secret_key
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+    volumes:
+      - milvus-data:/var/lib/milvus
+    restart: unless-stopped
+
   migrate:
     <<: *backend
     command: [sh, -eu, -c, 'uv run --no-sync alembic upgrade head && uv run --no-sync python -m devflow.bootstrap']
@@ -68,6 +156,8 @@ services:
 
   api:
     <<: *backend
+    volumes:
+      - workspace-data:/var/lib/devflow/workspace:ro
     depends_on:
       postgres: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
@@ -81,11 +171,50 @@ services:
 
   worker:
     <<: *backend
+    volumes:
+      - workspace-data:/var/lib/devflow/workspace
     command: [uv, run, --no-sync, python, -m, devflow.worker]
     depends_on:
       postgres: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
     stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Fixed model role: separate image with the optional models extra, one job at
+  # a time, a shared owner-lock volume and a read-only operator model directory.
+  # Host model files must be readable by UID 10001. Set DEVFLOW_MODEL_DIR and
+  # MODEL_DEVICE/MODEL_DTYPE explicitly; empty device/dtype fail at startup and
+  # are never silently treated as CPU.
+  model-worker:
+    <<: *backend
+    image: devflow-backend-models:${DEVFLOW_IMAGE_TAG:-local}
+    build:
+      context: ..
+      dockerfile: infra/backend.Dockerfile
+      target: model-runtime
+    command: [uv, run, --no-sync, python, -m, devflow.worker]
+    environment:
+      <<: *backend-environment
+      WORKER_ROLE: model
+      WORKER_CONCURRENCY: "1"
+      MODEL_EMBEDDING_PATH: ${MODEL_EMBEDDING_PATH:-/models/bge-m3}
+      MODEL_RERANKER_PATH: ${MODEL_RERANKER_PATH:-/models/bge-reranker-v2-m3}
+      MODEL_DEVICE: ${MODEL_DEVICE:-}
+      MODEL_DTYPE: ${MODEL_DTYPE:-}
+      MODEL_LOCK_PATH: /var/lib/devflow/model/model-owner.lock
+      MODEL_STARTUP_TIMEOUT_SECONDS: ${MODEL_STARTUP_TIMEOUT_SECONDS:-1800}
+      MODEL_DRAIN_TIMEOUT_SECONDS: ${MODEL_DRAIN_TIMEOUT_SECONDS:-120}
+      KNOWLEDGE_TOKENIZER_PATH: ${KNOWLEDGE_TOKENIZER_PATH:-/models/bge-m3}
+    volumes:
+      - workspace-data:/var/lib/devflow/workspace
+      - model-owner:/var/lib/devflow/model
+      - ${DEVFLOW_MODEL_DIR:-./.models}:/models:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      milvus: {condition: service_healthy}
+    # Drain in-flight inference before Compose escalates to SIGKILL.
+    stop_grace_period: 150s
     restart: unless-stopped
 
   frontend:
@@ -125,9 +254,16 @@ services:
     cap_drop: [ALL]
 
 volumes:
+  workspace-data:
   postgres-data:
   caddy-data:
   caddy-config:
+  # Shared by successive model-worker containers so only one process loads the
+  # local models at a time. Do not scale model-worker; its concurrency is 1.
+  model-owner:
+  milvus-etcd:
+  milvus-minio:
+  milvus-data:
 
 # Host source paths are runtime-only. Prefer an absolute directory outside this repo.
 secrets:
@@ -145,3 +281,7 @@ secrets:
     file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/credential_encryption_key
   app_signing_key:
     file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/app_signing_key
+  minio_access_key:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/minio_access_key
+  minio_secret_key:
+    file: ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}/minio_secret_key

@@ -31,9 +31,9 @@ def test_app_missing_optional_github_keeps_health(settings_factory):
 
 
 def test_app_injects_dependencies_and_does_not_close_external_http(
-    migrated_database, tmp_path
+    migrated_database, workspace_tmp_path
 ):
-    key = tmp_path / "fernet"
+    key = workspace_tmp_path / "fernet"
     key.write_bytes(Fernet.generate_key())
     settings = migrated_database[0].model_copy(
         update={"credential_encryption_key_file": key}
@@ -77,8 +77,10 @@ def test_app_closes_only_internally_created_http(settings_factory, monkeypatch):
     assert clients[0].is_closed
 
 
-def test_app_invalid_configured_cipher_fails_safely(settings_factory, tmp_path):
-    key = tmp_path / "invalid-key"
+def test_app_invalid_configured_cipher_fails_safely(
+    settings_factory, workspace_tmp_path
+):
+    key = workspace_tmp_path / "invalid-key"
     secret = "synthetic-invalid-fernet-key-sentinel"
     key.write_text(secret)
     app = create_app(

@@ -29,12 +29,16 @@ from devflow.github.webhooks import router as webhook_router
 from devflow.health.routes import router as health_router
 from devflow.jobs.routes import router as job_router
 from devflow.jobs.service import JobService
+from devflow.knowledge.routes import router as knowledge_router
 from devflow.logging import configure_logging, log_request
 from devflow.repositories.policy import RepositoryPolicy
 from devflow.repositories.routes import router as repository_router
 from devflow.repositories.service import RepositoryService
 from devflow.security import CredentialCipher, read_secret_file
 from devflow.sync.routes import router as sync_router
+from devflow.workspace.git import GitCache
+from devflow.workspace.process import GitRunner
+from devflow.workspace.routes import router as workspace_router
 
 
 def _error_response(
@@ -122,6 +126,9 @@ def create_app(
                 and configured.github_webhook_secret_file is not None
                 else None
             )
+            app.state.workspace_cache = GitCache(
+                configured.workspace_cache_root, GitRunner(configured)
+            )
             yield
         finally:
             try:
@@ -138,6 +145,8 @@ def create_app(
     app.include_router(sync_router)
     app.include_router(facts_router)
     app.include_router(health_router)
+    app.include_router(workspace_router)
+    app.include_router(knowledge_router)
     app.include_router(job_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
@@ -159,6 +168,13 @@ def create_app(
         finally:
             request_id_context.reset(token)
         response.headers["X-Request-ID"] = request.state.request_id
+        if request.url.path.startswith("/api/v1/repositories/"):
+            resource = request.url.path.split("/")[5:6]
+            if resource == ["workspaces"]:
+                # Includes dependency/validation/denial responses as well as content.
+                response.headers["Cache-Control"] = "no-store"
+            elif resource == ["knowledge"]:
+                response.headers["Cache-Control"] = "private, no-store"
         log_request(request.state.request_id, response.status_code)
         return response
 

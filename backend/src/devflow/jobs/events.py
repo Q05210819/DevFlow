@@ -38,14 +38,17 @@ class JobEventService:
     async def read_events(
         self, actor: Actor, job_id: UUID, after: int, limit: int = 100
     ) -> list[EventView]:
-        job = await self.jobs.get_visible(actor, job_id)
-        _, snapshot = await self.jobs.policy.local(actor, job.repository_id)
+        _, snapshots = await self.jobs.visibility(actor, job_id)
         # An epoch may change between the first authorization and this snapshot.
-        # Require this exact snapshot before reading, and fence it under the same
-        # short transaction used by ordinary job reads.
-        await self.jobs.policy.require(actor, job.repository_id)
+        # Require these exact snapshots before reading, and fence them under the
+        # same short transaction used by ordinary job reads.
+        current = await self.jobs._authorize_all(
+            actor, [key[1] for key in snapshots], fresh=False
+        )
+        if current != snapshots:
+            raise not_found()
         async with self.jobs.factory.begin() as session:
-            await self.jobs._lock_authorization(session, actor, snapshot)
+            await self.jobs._lock_authorizations(session, actor, snapshots)
             rows = await session.scalars(
                 select(RunEvent)
                 .join(Job, Job.id == RunEvent.job_id)
@@ -63,12 +66,11 @@ class JobEventService:
         current = await require_actor(request)
         if current != actor:
             raise unauthenticated()
-        job = await self.jobs.get_visible(actor, job_id)
+        job, snapshots = await self.jobs.visibility(actor, job_id)
         # A remote check can take time: logout/expiry during it must also deny.
         if await require_actor(request) != actor:
             raise unauthenticated()
-        _, snapshot = await self.jobs.policy.local(actor, job.repository_id)
-        return job, snapshot
+        return job, snapshots
 
     async def stream_job_events(
         self, request: Request, actor: Actor, job_id: UUID, after: int

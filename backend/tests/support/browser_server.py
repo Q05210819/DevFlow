@@ -4,10 +4,11 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import signal
 import sys
-import tempfile
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,10 +26,10 @@ from devflow.app import create_app
 from devflow.bootstrap import bootstrap_admin
 from devflow.db import create_session_factory
 from devflow.github.client import GitHubClient
-from support.full_flow import SyntheticGitHub, synthetic_settings
+from support.full_flow import SyntheticGitHub, WorkspaceFixture, synthetic_settings
 
 
-async def serve(settings, port):
+async def serve(settings, port, workspace=None):
     from devflow.worker import run_worker
 
     stop = asyncio.Event()
@@ -50,11 +51,13 @@ async def serve(settings, port):
     factory = create_session_factory(settings)
     try:
         await bootstrap_admin(factory, settings.bootstrap_admin_github_id)
+        if workspace is not None:
+            await workspace.record_guards(factory)
     finally:
         await factory.kw["bind"].dispose()
     try:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(SyntheticGitHub())
+            transport=httpx.MockTransport(SyntheticGitHub(workspace))
         ) as http:
             github = GitHubClient(http, settings)
             app = create_app(settings, github=github)
@@ -96,6 +99,15 @@ async def serve(settings, port):
                 waiter.cancel()
                 await asyncio.gather(waiter, return_exceptions=True)
                 await asyncio.wait_for(asyncio.gather(api, worker), timeout=40)
+                if workspace is not None:
+                    audit_factory = create_session_factory(settings)
+                    try:
+                        guards = await workspace.record_guards(audit_factory)
+                        assert all(row["state"] == "drained" for row in guards), (
+                            "Workspace cleanup remains unresolved"
+                        )
+                    finally:
+                        await audit_factory.kw["bind"].dispose()
     finally:
         for kind, handler in previous.items():
             signal.signal(kind, handler)
@@ -105,6 +117,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--origin", required=True)
+    parser.add_argument("--scenario", choices=("facts", "workspace"), default="facts")
     args = parser.parse_args()
     url = validated_test_url(
         os.environ.get(
@@ -113,6 +126,18 @@ def main():
         )
     )
     schema = "test_browser_" + uuid4().hex
+    workspace = None
+    runtime_started = False
+    runtime_cleaned = False
+    fixture_root = (
+        Path(__file__).resolve().parents[3] / ".superpowers" / "workspace-fixtures"
+    )
+    fixture_root.mkdir(parents=True, exist_ok=True)
+    owned = fixture_root / uuid4().hex
+    owned.mkdir(mode=0o777 if os.name == "nt" else 0o700)
+    print(
+        json.dumps({"acceptance_fixture": str(owned), "pid": os.getpid()}), flush=True
+    )
     with psycopg.connect(
         url.set(drivername="postgresql").render_as_string(hide_password=False),
         autocommit=True,
@@ -120,7 +145,9 @@ def main():
         connection.execute(f'CREATE SCHEMA "{schema}"')
         try:
             print(json.dumps({"acceptance_schema": schema}), flush=True)
-            with tempfile.TemporaryDirectory(prefix="devflow-browser-") as directory:
+            if args.scenario == "workspace":
+                workspace = WorkspaceFixture(owned)
+            with nullcontext(str(owned)) as directory:
                 scoped = url.update_query_dict({"options": f"-csearch_path={schema}"})
                 settings = synthetic_settings(
                     Path(directory),
@@ -134,13 +161,31 @@ def main():
                     settings.database_url.get_secret_value()
                 )
                 command.upgrade(config, "head")
-                asyncio.run(
-                    serve(settings, args.port), loop_factory=asyncio.SelectorEventLoop
-                )
+                with workspace.transfer_context() if workspace else nullcontext():
+                    runtime_started = True
+                    asyncio.run(
+                        serve(settings, args.port, workspace),
+                        loop_factory=asyncio.SelectorEventLoop,
+                    )
+                    runtime_cleaned = True
         finally:
-            connection.execute(f'DROP SCHEMA "{schema}" CASCADE')
+            # An uncertain Workspace teardown retains DB + owned files for proof.
+            cleaned = workspace is None or not runtime_started or runtime_cleaned
+            if cleaned:
+                connection.execute(f'DROP SCHEMA "{schema}" CASCADE')
+                assert (
+                    connection.execute(
+                        "SELECT to_regnamespace(%s)", (schema,)
+                    ).fetchone()[0]
+                    is None
+                )
+                if workspace is None:
+                    assert owned.resolve().parent == fixture_root.resolve()
+                    assert not owned.is_symlink() and not owned.is_junction()
+                    shutil.rmtree(owned)
             print(
-                json.dumps({"acceptance_cleaned": True, "pid": os.getpid()}), flush=True
+                json.dumps({"acceptance_cleaned": cleaned, "pid": os.getpid()}),
+                flush=True,
             )
 
 

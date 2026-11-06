@@ -1,6 +1,7 @@
 """Validated runtime settings. Secrets stay in mounted files."""
 
 import json
+import os
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
@@ -41,9 +42,31 @@ class Settings(BaseSettings):
     job_heartbeat_seconds: int = Field(default=10, gt=0)
     job_attempt_timeout_seconds: int = Field(default=120, gt=0)
     worker_concurrency: int = Field(default=4, gt=0)
+    worker_role: Literal["ordinary", "model"] = "ordinary"
+    knowledge_tokenizer_path: Path | None = None
+    model_embedding_path: Path | None = None
+    model_reranker_path: Path | None = None
+    model_lock_path: Path = Path(
+        "C:/ProgramData/DevFlow/model-owner.lock"
+        if os.name == "nt"
+        else "/var/lib/devflow/model-owner.lock"
+    )
+    model_device: Literal["cpu", "cuda"] = "cpu"
+    model_dtype: Literal["float16", "float32", "bfloat16"] = "float32"
+    model_startup_timeout_seconds: float = Field(default=1800, gt=0, le=3600)
+    model_drain_timeout_seconds: int = Field(default=120, gt=0, le=600)
+    milvus_uri: str = "http://127.0.0.1:19530"
+    milvus_token: SecretStr | None = None
+    milvus_collection: str = Field(
+        default="devflow_knowledge_v1",
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,254}$",
+    )
+    milvus_timeout_seconds: float = Field(default=5, gt=0, le=5)
+    milvus_build_timeout_seconds: int = Field(default=120, gt=0, le=600)
     sync_concurrency: int = Field(default=2, ge=1, le=10)
-    sync_unit_requests: int = Field(default=5, ge=1, le=100)
-    sync_unit_seconds: int = Field(default=120, ge=10, le=120)
+    sync_unit_requests: int = Field(default=5, ge=1, le=5)
+    # Reserve the full 10-second HTTP deadline after up to 5 seconds of setup.
+    sync_unit_seconds: int = Field(default=120, ge=15, le=120)
     sync_round_requests: int = Field(default=10000, ge=1, le=1000000)
     sync_round_seconds: int = Field(default=86400, ge=10, le=604800)
     sync_interval_seconds: int = Field(default=900, ge=1)
@@ -51,6 +74,56 @@ class Settings(BaseSettings):
     sync_history_days: int = Field(default=90, ge=1, le=365)
     sync_actions_days: int = Field(default=30, ge=1, le=365)
     sync_overlap_seconds: int = Field(default=300, ge=0, le=86400)
+
+    workspace_git_executable: Path = Path(
+        "C:/Program Files/Git/cmd/git.exe" if os.name == "nt" else "/usr/bin/git"
+    )
+    workspace_cache_root: Path = Path(
+        "C:/ProgramData/DevFlow/workspace"
+        if os.name == "nt"
+        else "/var/lib/devflow/workspace"
+    )
+    workspace_repository_bytes: int = Field(default=2 * 1024**3, gt=0)
+    workspace_total_bytes: int = Field(default=20 * 1024**3, gt=0)
+    workspace_unused_days: int = Field(default=7, ge=1)
+    workspace_orphan_grace_seconds: int = Field(default=600, ge=0, le=86400)
+
+    @field_validator("workspace_git_executable", "workspace_cache_root")
+    @classmethod
+    def absolute_git_path(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("WORKSPACE_GIT_EXECUTABLE must be absolute")
+        return value
+
+    @field_validator("model_lock_path")
+    @classmethod
+    def absolute_model_lock_path(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("MODEL_LOCK_PATH must be absolute")
+        return value
+
+    @field_validator("model_embedding_path", "model_reranker_path")
+    @classmethod
+    def absolute_model_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("Local model paths must be absolute")
+        return value
+
+    @field_validator("milvus_uri")
+    @classmethod
+    def milvus_http_origin(cls, value: str) -> str:
+        url = urlsplit(value)
+        if (
+            url.scheme not in {"http", "https"}
+            or not url.hostname
+            or url.username
+            or url.password
+            or url.path not in {"", "/"}
+            or url.query
+            or url.fragment
+        ):
+            raise ValueError("MILVUS_URI must be an HTTP(S) origin")
+        return value.rstrip("/")
 
     @field_validator("github_allowed_installation_ids", mode="before")
     @classmethod
@@ -107,5 +180,31 @@ class Settings(BaseSettings):
                     raise ValueError(
                         f"Production secret file {name.upper()} is required"
                     )
+
+        # Knowledge cleanup holds the Job row for the whole 5-second fenced
+        # transaction. A heartbeat at or below that fence can only time out on
+        # the row lock, falsely report a lost lease and cancel the sweep.
+        if self.job_heartbeat_seconds <= 5:
+            raise ValueError(
+                "JOB_HEARTBEAT_SECONDS must exceed the 5-second maintenance fence"
+            )
+
+        if self.worker_role == "model":
+            if self.model_embedding_path is None or self.model_reranker_path is None:
+                raise ValueError(
+                    "A model worker requires local embedding and reranker paths"
+                )
+            # CPU is a valid local choice, but it (like every CUDA dtype) must
+            # be an explicit deployment decision rather than a hidden default.
+            missing = [
+                name
+                for name in ("model_device", "model_dtype")
+                if name not in self.model_fields_set
+            ]
+            if missing:
+                raise ValueError(
+                    "MODEL_DEVICE and MODEL_DTYPE must be set explicitly for a "
+                    "model worker"
+                )
 
         return self

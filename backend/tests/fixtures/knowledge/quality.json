@@ -1,0 +1,406 @@
+{
+  "version": "knowledge-quality-v1",
+  "frozen_at": "2026-10-20",
+  "repositories": {
+    "base": {
+      "sha": "1111111111111111111111111111111111111111",
+      "index_generation": 1,
+      "target_generation": 1,
+      "root": "repos/base"
+    },
+    "legacy": {
+      "sha": "2222222222222222222222222222222222222222",
+      "target_sha": "3333333333333333333333333333333333333333",
+      "index_generation": 1,
+      "target_generation": 2,
+      "root": "repos/legacy"
+    },
+    "isolated": {
+      "sha": "4444444444444444444444444444444444444444",
+      "index_generation": 1,
+      "target_generation": 1,
+      "root": "repos/isolated"
+    }
+  },
+  "questions": [
+    {
+      "id": "zh-01",
+      "group": "zh",
+      "question": "每次部署前必须先生成什么，发布清单又包含哪些内容？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/deploy.md", "start_line": 7, "end_line": 7},
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/deploy.md", "start_line": 8, "end_line": 8}
+      ]
+    },
+    {
+      "id": "zh-02",
+      "group": "zh",
+      "question": "灰度发布会先把多少生产流量切到新版本，之后按什么比例扩大？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/deploy.md", "start_line": 12, "end_line": 12},
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/deploy.md", "start_line": 13, "end_line": 13}
+      ]
+    },
+    {
+      "id": "zh-03",
+      "group": "zh",
+      "question": "生产回滚使用的固定命令是什么？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/deploy.md", "start_line": 18, "end_line": 18}
+      ]
+    },
+    {
+      "id": "zh-04",
+      "group": "zh",
+      "question": "为什么数据库迁移要拆分为 expand 与 contract 两个阶段？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/deploy.md", "start_line": 19, "end_line": 20}
+      ]
+    },
+    {
+      "id": "zh-05",
+      "group": "zh",
+      "question": "生产部署对本地模型凭据有哪些禁止事项？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/deploy.md", "start_line": 24, "end_line": 26}
+      ]
+    },
+    {
+      "id": "zh-06",
+      "group": "zh",
+      "question": "部署完成后的健康检查需要确认什么，失败时怎么处理？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/deploy.md", "start_line": 30, "end_line": 31}
+      ]
+    },
+    {
+      "id": "en-01",
+      "group": "en",
+      "question": "What is the primary paging alert and when does it fire?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/operations/runbook.md", "start_line": 8, "end_line": 9}
+      ]
+    },
+    {
+      "id": "en-02",
+      "group": "en",
+      "question": "Who should be paged first during an incident, and who owns database escalation?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/operations/runbook.md", "start_line": 14, "end_line": 15}
+      ]
+    },
+    {
+      "id": "en-03",
+      "group": "en",
+      "question": "What must happen before restarting a model worker, and what does draining prevent?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/operations/runbook.md", "start_line": 20, "end_line": 21}
+      ]
+    },
+    {
+      "id": "en-04",
+      "group": "en",
+      "question": "How often are restore drills run and what is verified before declaring success?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/operations/runbook.md", "start_line": 26, "end_line": 27}
+      ]
+    },
+    {
+      "id": "en-05",
+      "group": "en",
+      "question": "When is the post-incident review due and what must it include?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/operations/runbook.md", "start_line": 32, "end_line": 33}
+      ]
+    },
+    {
+      "id": "en-06",
+      "group": "en",
+      "question": "When does an index version become queryable and what must publication prove?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/architecture.md", "start_line": 13, "end_line": 14}
+      ]
+    },
+    {
+      "id": "mixed-01",
+      "group": "mixed",
+      "question": "source_repository_id 与 dependency_repository_ids 分别记录什么？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/namespaces.md", "start_line": 7, "end_line": 8}
+      ]
+    },
+    {
+      "id": "mixed-02",
+      "group": "mixed",
+      "question": "用户没有显式选择分支仓库时，带分支依赖的修订必须怎样处理？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/namespaces.md", "start_line": 9, "end_line": 9}
+      ]
+    },
+    {
+      "id": "mixed-03",
+      "group": "mixed",
+      "question": "The vector filter 按哪些标识限定范围，未选仓库会怎样？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/namespaces.md", "start_line": 13, "end_line": 14}
+      ]
+    },
+    {
+      "id": "mixed-04",
+      "group": "mixed",
+      "question": "仅来源仓库（source-only repository）是否建立索引？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/namespaces.md", "start_line": 19, "end_line": 20}
+      ]
+    },
+    {
+      "id": "mixed-05",
+      "group": "mixed",
+      "question": "旧 active SHA 在什么条件下才能参与检索，界面必须显示什么？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/namespaces.md", "start_line": 25, "end_line": 26}
+      ]
+    },
+    {
+      "id": "code-01",
+      "group": "code",
+      "question": "RRF_K 的值是多少，它在 fuse_ranked_lists 中如何参与打分？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "src/retrieval/ranker.py", "start_line": 6, "end_line": 6},
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "src/retrieval/ranker.py", "start_line": 18, "end_line": 18}
+      ]
+    },
+    {
+      "id": "code-02",
+      "group": "code",
+      "question": "RERANK_LIMIT 常量的值是多少？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "src/retrieval/ranker.py", "start_line": 7, "end_line": 7}
+      ]
+    },
+    {
+      "id": "code-03",
+      "group": "code",
+      "question": "select_evidence 对同一个文件最多保留多少条，并在什么情况下跳过候选？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "src/retrieval/ranker.py", "start_line": 22, "end_line": 23},
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "src/retrieval/ranker.py", "start_line": 29, "end_line": 31}
+      ]
+    },
+    {
+      "id": "code-04",
+      "group": "code",
+      "question": "overlaps 函数如何判断两个字节区间相交？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "src/retrieval/ranker.py", "start_line": 41, "end_line": 45}
+      ]
+    },
+    {
+      "id": "code-05",
+      "group": "code",
+      "question": "fuse_ranked_lists 在分数相同时用什么规则稳定排序？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "src/retrieval/ranker.py", "start_line": 19, "end_line": 19}
+      ]
+    },
+    {
+      "id": "path-01",
+      "group": "path",
+      "question": "值班手册的完整路径是什么？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/index.md", "start_line": 8, "end_line": 8},
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/index.md", "start_line": 13, "end_line": 13}
+      ]
+    },
+    {
+      "id": "path-02",
+      "group": "path",
+      "question": "排序实现的源码路径是什么？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/index.md", "start_line": 11, "end_line": 11},
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/index.md", "start_line": 14, "end_line": 14}
+      ]
+    },
+    {
+      "id": "path-03",
+      "group": "path",
+      "question": "部署流程的文档路径是什么？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/index.md", "start_line": 7, "end_line": 7},
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/index.md", "start_line": 15, "end_line": 15}
+      ]
+    },
+    {
+      "id": "path-04",
+      "group": "path",
+      "question": "来源仓库与依赖说明位于哪个文档路径？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/index.md", "start_line": 10, "end_line": 10}
+      ]
+    },
+    {
+      "id": "path-05",
+      "group": "path",
+      "question": "修订与索引发布说明位于哪个文档路径？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [
+        {"repository": "base", "sha": "1111111111111111111111111111111111111111", "path": "docs/index.md", "start_line": 9, "end_line": 9}
+      ]
+    },
+    {
+      "id": "no-answer-01",
+      "group": "no_answer",
+      "question": "Kubernetes 集群的证书轮换周期是多少天？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": []
+    },
+    {
+      "id": "no-answer-02",
+      "group": "no_answer",
+      "question": "Which vendor provides the hosted speech-to-text service?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": []
+    },
+    {
+      "id": "no-answer-03",
+      "group": "no_answer",
+      "question": "移动端 iOS 离线缓存的清理策略是什么？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": []
+    },
+    {
+      "id": "no-answer-04",
+      "group": "no_answer",
+      "question": "How many shards does the analytics ClickHouse cluster use?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": []
+    },
+    {
+      "id": "old-sha-01",
+      "group": "old_sha",
+      "question": "旧版检索 API 的 endpoint 路径是什么？",
+      "selected_repositories": ["legacy"],
+      "indexes": [{"repository": "legacy", "sha": "2222222222222222222222222222222222222222", "target": "active"}],
+      "answers": [
+        {"repository": "legacy", "sha": "2222222222222222222222222222222222222222", "path": "docs/old-api.md", "start_line": 8, "end_line": 8}
+      ]
+    },
+    {
+      "id": "old-sha-02",
+      "group": "old_sha",
+      "question": "旧版 top_k 的默认值和允许的最大值分别是多少？",
+      "selected_repositories": ["legacy"],
+      "indexes": [{"repository": "legacy", "sha": "2222222222222222222222222222222222222222", "target": "active"}],
+      "answers": [
+        {"repository": "legacy", "sha": "2222222222222222222222222222222222222222", "path": "docs/old-api.md", "start_line": 9, "end_line": 10}
+      ]
+    },
+    {
+      "id": "old-sha-03",
+      "group": "old_sha",
+      "question": "旧版响应中的 hit 包含哪些字段？",
+      "selected_repositories": ["legacy"],
+      "indexes": [{"repository": "legacy", "sha": "2222222222222222222222222222222222222222", "target": "active"}],
+      "answers": [
+        {"repository": "legacy", "sha": "2222222222222222222222222222222222222222", "path": "docs/old-api.md", "start_line": 14, "end_line": 15}
+      ]
+    },
+    {
+      "id": "old-sha-04",
+      "group": "old_sha",
+      "question": "旧索引使用的向量维度是多少，新目标要求多少？",
+      "selected_repositories": ["legacy"],
+      "indexes": [{"repository": "legacy", "sha": "2222222222222222222222222222222222222222", "target": "active"}],
+      "answers": [
+        {"repository": "legacy", "sha": "2222222222222222222222222222222222222222", "path": "docs/deprecated.md", "start_line": 13, "end_line": 14}
+      ]
+    },
+    {
+      "id": "isolated-01",
+      "group": "isolated",
+      "question": "What is the unique fixture marker in the isolated runbook?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [],
+      "forbidden_repository": "isolated",
+      "forbidden_markers": ["ISOLATED-ONLY-MARKER-7f3a", "隔离仓库专用标记"]
+    },
+    {
+      "id": "isolated-02",
+      "group": "isolated",
+      "question": "隔离仓库专用标记出现在哪个仓库？",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [],
+      "forbidden_repository": "isolated",
+      "forbidden_markers": ["ISOLATED-ONLY-MARKER-7f3a", "隔离仓库专用标记"]
+    },
+    {
+      "id": "isolated-03",
+      "group": "isolated",
+      "question": "Which repository documents the fictional example-isolated-key credential?",
+      "selected_repositories": ["base"],
+      "indexes": [{"repository": "base", "sha": "1111111111111111111111111111111111111111", "target": "target"}],
+      "answers": [],
+      "forbidden_repository": "isolated",
+      "forbidden_markers": ["ISOLATED-ONLY-MARKER-7f3a", "隔离仓库专用标记", "example-isolated-key"]
+    }
+  ]
+}

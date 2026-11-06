@@ -11,16 +11,36 @@ dependencies = [
     "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.15.0",
     "pyjwt>=2.15.1",
+    "pymilvus==2.6.17",
     "sqlalchemy[asyncio]>=2.1.1",
+    "tokenizers>=0.23.3,<0.24",
+    "transformers>=5.20.2,<6",
     "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
 devflow-worker = "devflow.worker:main"
 
+[project.optional-dependencies]
+models = [
+    "sentence-transformers>=6.2.0",
+    "torch>=2.15.0",
+]
+
 [build-system]
 requires = ["uv_build>=0.11.25,<0.12.0"]
 build-backend = "uv_build"
+
+# The model runtime is CPU-only until a CUDA host is explicitly validated.
+# Resolve ``torch`` from PyTorch's CPU index so a plain ``models`` extra can
+# never silently install a CUDA build with its NVIDIA runtime packages.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [dependency-groups]
 dev = [

@@ -662,19 +662,57 @@ async def test_failure_paths_wait_for_scope_before_locking_job(sync_env, operati
             await asyncio.gather(task, return_exceptions=True)
 
 
-def test_sync_settings_reject_invalid_budgets(settings_factory):
-    from pydantic import ValidationError
-
-    for setting, value in [
+@pytest.mark.parametrize(
+    "setting,value",
+    [
         ("sync_concurrency", 0),
         ("sync_unit_requests", 0),
+        ("sync_unit_requests", 6),
+        ("sync_unit_requests", 100),
         ("sync_unit_seconds", 9),
+        ("sync_unit_seconds", 10),
+        ("sync_unit_seconds", 14),
+        ("sync_unit_seconds", 121),
         ("sync_round_requests", -1),
         ("sync_round_seconds", 0),
         ("sync_history_days", 366),
-    ]:
-        with pytest.raises(ValidationError):
-            settings_factory(**{setting: value})
+    ],
+)
+def test_sync_settings_reject_invalid_budgets(settings_factory, setting, value):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        settings_factory(**{setting: value})
+
+
+@pytest.mark.parametrize("requests", [1, 5])
+@pytest.mark.asyncio
+async def test_minimum_unit_budget_reserves_after_setup(
+    sync_env, settings_factory, requests
+):
+    from devflow.sync.service import SyncService, UnitComplete
+
+    env = sync_env
+    settings = settings_factory(sync_unit_seconds=15, sync_unit_requests=requests)
+    env.settings.sync_unit_seconds = settings.sync_unit_seconds
+    env.settings.sync_unit_requests = settings.sync_unit_requests
+    env.sync = SyncService(env.factory, env.settings)
+    lease, work = await start(env)
+    async with env.factory.begin() as db:
+        job = await db.get(Job, lease.job_id)
+        job.attempt_started_at = await db.scalar(
+            select(func.clock_timestamp() - text("interval '2 seconds'"))
+        )
+    for _ in range(requests):
+        await env.sync.reserve_request(lease, work)
+    with pytest.raises(UnitComplete):
+        await env.sync.reserve_request(lease, work)
+    assert await env.sync.continue_job(lease, work)
+    successor = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    await env.sync.reserve_request(successor, await env.sync.snapshot(successor))
+    async with env.factory() as db:
+        assert (await db.get(Job, lease.job_id)).request_count == requests
+        assert (await db.get(Job, successor.job_id)).request_count == 1
 
 
 @pytest.mark.asyncio
@@ -973,3 +1011,279 @@ async def test_partial_round_does_not_claim_daily_reconciliation(sync_env):
         state = await db.get(RepositorySync, env.repository.id)
         assert state.last_reconciled_at is None
         assert state.processed_sequence == 1 and state.active_job_id is None
+
+    # A completed reconciliation attempt with a known gap must not create a hot loop.
+    assert await env.scheduler.tick() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["periodic", "reconcile"])
+async def test_due_full_scan_coalesces_during_target_work(sync_env, reason):
+    env = sync_env
+    lease, _ = await start(env)
+    await finish(env, lease)
+    await demand(env, target=SyncTarget(kind="issue", source_id=501, number=1))
+    lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    work = await env.sync.snapshot(lease)
+    captured = work.captured_sequence
+    async with env.factory.begin() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        state.next_due_at = datetime.now(UTC) + timedelta(hours=1)
+        if reason == "periodic":
+            state.next_due_at = datetime(2000, 1, 1, tzinfo=UTC)
+        else:
+            state.last_reconciled_at = datetime(2000, 1, 1, tzinfo=UTC)
+            state.next_reconcile_at = datetime(2000, 1, 1, tzinfo=UTC)
+        deadline = state.next_due_at
+    assert await env.scheduler.tick() == 1
+    assert await env.scheduler.tick() == 0
+    await demand(env, target=SyncTarget(kind="pull", number=2))
+    async with env.factory() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        assert state.active_job_id == lease.job_id
+        assert (await db.get(Job, lease.job_id)).input["captured_sequence"] == captured
+        assert state.next_due_at == deadline
+        assert (
+            len(
+                list(
+                    await db.scalars(
+                        select(SyncDemand).where(SyncDemand.reason == reason)
+                    )
+                )
+            )
+            == 1
+        )
+    assert await env.sync.commit_page(
+        lease, work, facts=[], collections=[], checkpoint=work.cursor, complete=True
+    )
+    successor = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    next_work = await env.sync.snapshot(successor)
+    assert next_work.cursor.mode == (
+        "reconcile" if reason == "reconcile" else "incremental"
+    )
+    assert next_work.captured_sequence == captured + 2
+    await finish(env, successor)
+    assert await env.scheduler.tick() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bounded", ["targeted", "backfill"])
+async def test_bounded_completions_do_not_move_full_scan_deadlines(sync_env, bounded):
+    from devflow.sync.scheduler import request_sync
+    from devflow.sync.schemas import BackfillRange
+
+    env = sync_env
+    lease, _ = await start(env)
+    await finish(env, lease)
+    async with env.factory.begin() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        state.next_due_at = datetime.now(UTC) + timedelta(seconds=1)
+        deadline, reconciled, daily = (
+            state.next_due_at,
+            state.last_reconciled_at,
+            state.next_reconcile_at,
+        )
+    for _ in range(2):
+        async with env.factory.begin() as db:
+            await request_sync(
+                db,
+                env.repository.id,
+                reason="backfill" if bounded == "backfill" else "webhook",
+                backfill=BackfillRange(
+                    since=datetime(2020, 1, 1, tzinfo=UTC),
+                    until=datetime(2020, 2, 1, tzinfo=UTC),
+                    streams=["issues"],
+                )
+                if bounded == "backfill"
+                else None,
+                target=SyncTarget(kind="issue", source_id=501, number=1)
+                if bounded == "targeted"
+                else None,
+            )
+        lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+        work = await env.sync.snapshot(lease)
+        assert await env.sync.commit_page(
+            lease, work, facts=[], collections=[], checkpoint=work.cursor, complete=True
+        )
+        async with env.factory() as db:
+            state = await db.get(RepositorySync, env.repository.id)
+            assert (
+                state.next_due_at,
+                state.last_reconciled_at,
+                state.next_reconcile_at,
+            ) == (deadline, reconciled, daily)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        ("complete", None),
+        ("partial", "source_limit"),
+        ("permission_missing", "permission_missing"),
+    ],
+)
+@pytest.mark.parametrize("failure", ["retry", "recover"])
+async def test_target_execution_preserves_full_stream_evidence(
+    sync_env, status, reason, failure
+):
+    from devflow.facts.service import coverage
+    from devflow.health.service import compute_snapshot
+    from devflow.sync.routes import sync_view
+
+    env = sync_env
+    lease, _ = await start(env)
+    await finish(env, lease)
+    # A later full pass can leave a gap while retaining its older successful window.
+    async with env.factory.begin() as db:
+        cursor = await db.get(SyncCursor, (env.repository.id, "issues"))
+        cursor.status, cursor.error_code = status, reason
+    async with env.factory() as db:
+        before = await coverage(db, env.repository.id, "issue")
+    await demand(env, target=SyncTarget(kind="issue", source_id=501, number=1))
+    lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    work = await env.sync.snapshot(lease)
+    async with env.factory() as db:
+        assert await coverage(db, env.repository.id, "issue") == before
+    assert await env.sync.commit_page(
+        lease,
+        work,
+        facts=[issue(env, work.observed_at)],
+        collections=[],
+        checkpoint=work.cursor,
+        complete=False,
+    )
+    assert await env.sync.continue_job(lease, work)
+    lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    work = await env.sync.snapshot(lease)
+    if failure == "retry":
+        assert await env.queue.fail(lease, "github_unavailable", True)
+    else:
+        async with env.factory.begin() as db:
+            job = await db.get(Job, lease.job_id)
+            job.lease_expires_at = datetime(2000, 1, 1, tzinfo=UTC)
+        assert await env.queue.recover_expired() == 1
+    async with env.factory.begin() as db:
+        assert await coverage(db, env.repository.id, "issue") == before
+        job = await db.get(Job, lease.job_id)
+        job.available_at = datetime(2000, 1, 1, tzinfo=UTC)
+    lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    work = await env.sync.snapshot(lease)
+    assert await env.sync.commit_page(
+        lease, work, facts=[], collections=[], checkpoint=work.cursor, complete=True
+    )
+    async with env.factory.begin() as db:
+        assert await coverage(db, env.repository.id, "issue") == before
+        view = await sync_view(db, env.repository.id)
+        stream = next(s for s in view.streams if s.stream == "issues")
+        assert (stream.status, stream.error_code, stream.last_success_at) == (
+            status,
+            reason,
+            before.last_success_at,
+        )
+        assert (
+            stream.remaining.stage == "done"
+            and stream.remaining.enumeration_complete is None
+        )
+        state = await db.get(RepositorySync, env.repository.id)
+        frozen = await compute_snapshot(db, env.repository, state, datetime.now(UTC))
+        assert before in frozen.coverage
+        assert await db.scalar(select(func.count()).select_from(Fact)) == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_due_survives_active_incremental_round(sync_env):
+    env = sync_env
+    lease, _ = await start(env)
+    await finish(env, lease)
+    async with env.factory.begin() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        state.next_due_at = datetime(2000, 1, 1, tzinfo=UTC)
+    assert await env.scheduler.tick() == 1
+    lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    assert (await env.sync.snapshot(lease)).cursor.mode == "incremental"
+    async with env.factory.begin() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        state.next_reconcile_at = datetime(2000, 1, 1, tzinfo=UTC)
+        successful = state.last_reconciled_at
+    assert await env.scheduler.tick() == 1
+    assert await env.scheduler.tick() == 0
+    await finish(env, lease)
+    async with env.factory() as db:
+        state = await db.get(RepositorySync, env.repository.id)
+        assert state.next_reconcile_at == datetime(2000, 1, 1, tzinfo=UTC)
+        assert state.last_reconciled_at == successful
+    next_lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    assert (await env.sync.snapshot(next_lease)).cursor.mode == "reconcile"
+    await finish(env, next_lease)
+    assert await env.scheduler.tick() == 0
+
+
+@pytest.mark.asyncio
+async def test_first_target_success_cannot_establish_stream_coverage(sync_env):
+    from devflow.facts.service import coverage
+
+    env = sync_env
+    await demand(env, target=SyncTarget(kind="issue", source_id=501, number=1))
+    lease = await env.queue.claim(uuid4())
+    work = await env.sync.snapshot(lease)
+    assert await env.sync.commit_page(
+        lease,
+        work,
+        facts=[issue(env, work.observed_at)],
+        collections=[],
+        checkpoint=work.cursor,
+        complete=True,
+    )
+    async with env.factory() as db:
+        evidence = await coverage(db, env.repository.id, "issue")
+        assert evidence.status == "pending"
+        assert evidence.last_success_at is None and evidence.completed_watermark is None
+
+
+@pytest.mark.asyncio
+async def test_target_permission_gap_remains_visible_without_replacing_full_gap(
+    sync_env,
+):
+    from devflow.facts.service import coverage
+    from devflow.sync.routes import sync_view
+
+    env = sync_env
+    lease, work = await start(env)
+    assert await env.sync.commit_page(
+        lease,
+        work,
+        facts=[],
+        collections=[],
+        checkpoint=work.cursor,
+        complete=True,
+        outcome="partial",
+        reason="source_limit",
+    )
+    for _ in range(2):
+        work = await env.sync.snapshot(lease)
+        assert await env.sync.commit_page(
+            lease, work, facts=[], collections=[], checkpoint=work.cursor, complete=True
+        )
+    async with env.factory() as db:
+        before = await coverage(db, env.repository.id, "issue")
+    await demand(env, target=SyncTarget(kind="issue", source_id=501, number=1))
+    lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
+    work = await env.sync.snapshot(lease)
+    checkpoint = work.cursor.model_copy(update={"gap_reason": "permission_missing"})
+    assert await env.sync.commit_page(
+        lease,
+        work,
+        facts=[],
+        collections=[],
+        checkpoint=checkpoint,
+        complete=True,
+        outcome="permission_missing",
+        reason="permission_missing",
+    )
+    async with env.factory.begin() as db:
+        assert await coverage(db, env.repository.id, "issue") == before
+        view = await sync_view(db, env.repository.id)
+        stream = next(s for s in view.streams if s.stream == "issues")
+        assert stream.error_code == "source_limit"
+        assert stream.remaining.reason == "permission_missing"

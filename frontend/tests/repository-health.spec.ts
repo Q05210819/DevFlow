@@ -12,7 +12,8 @@ test("health preserves evidence time and unknown counts when refresh fails", asy
   await expect(region.getByText(stamp, { exact: true }).first()).toBeVisible();
   await expect(region.getByText("未知", { exact: true }).first()).toBeVisible();
   await expect(region).toContainText("记录创建/更新");
-  await expect(region).toContainText("Workspace 暂不可用");
+  await expect(region.getByRole("region", { name: "代码版本证据" })).toContainText("不可用");
+  await expect(region).toContainText("该历史摘要没有记录逐版本验证清单，检查数量未知");
   await page.getByRole("button", { name: "刷新健康摘要" }).click();
   await expect(region.getByRole("alert")).toContainText("刷新失败");
   await expect(region.getByText(stamp, { exact: true }).first()).toBeVisible();

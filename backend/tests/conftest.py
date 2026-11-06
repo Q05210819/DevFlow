@@ -11,6 +11,17 @@ from alembic.config import Config
 from sqlalchemy.engine import make_url
 
 
+@pytest.fixture
+def workspace_tmp_path():
+    """Owned workspace fixtures retain inherited Windows sandbox permissions."""
+    root = Path(__file__).resolve().parents[2] / ".superpowers" / "workspace-fixtures"
+    root.mkdir(parents=True, exist_ok=True)
+    child = root / uuid4().hex
+    child.mkdir(mode=0o777 if os.name == "nt" else 0o700)
+    # Retain evidence: process tests may fail before they can prove child teardown.
+    return child
+
+
 def pytest_asyncio_loop_factories():
     return {"selector": asyncio.SelectorEventLoop}
 

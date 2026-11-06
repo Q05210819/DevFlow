@@ -16,11 +16,14 @@ from devflow.github.client import not_found
 from devflow.github.models import GitHubInstallation
 from devflow.jobs.models import Job, RunEvent
 from devflow.jobs.schemas import EventPayload, IdempotencyKey, JobStatus, JobView
+from devflow.knowledge.models import KnowledgeQuery, KnowledgeQueryRepository
 from devflow.repositories.models import Repository
 from devflow.repositories.policy import RepositoryPolicy, check_actor
 
 _KEY = TypeAdapter(IdempotencyKey)
 _KIND = "repository.access_probe"
+_QUERY_KIND = "knowledge.query"
+_VISIBLE_KINDS = frozenset({_KIND, _QUERY_KIND})
 
 
 async def append_event(
@@ -180,15 +183,94 @@ class JobService:
                 await self.policy.audit_denial(actor, error, repository_id)
             raise
 
-    async def get_visible(self, actor: Actor, job_id: UUID) -> JobView:
-        # Load only the creator-scoped authorization reference, never the result.
+    async def _visible_scope(self, actor: Actor, job_id: UUID):
+        """Load the creator-scoped repository set, never the result.
+
+        A query Job belongs to every repository its frozen selection included,
+        not only the anchor kept on Job.repository_id.
+        """
         async with self.factory() as session:
-            repository_id = await session.scalar(
-                select(Job.repository_id).where(
-                    Job.id == job_id, Job.requested_by == actor.id
+            row = (
+                await session.execute(
+                    select(Job.kind, Job.repository_id).where(
+                        Job.id == job_id,
+                        Job.requested_by == actor.id,
+                        Job.kind.in_(_VISIBLE_KINDS),
+                    )
+                )
+            ).first()
+            if row is None:
+                return None
+            kind, anchor = row
+            if kind != _QUERY_KIND:
+                return (anchor,)
+            repositories = tuple(
+                await session.scalars(
+                    select(KnowledgeQueryRepository.repository_id)
+                    .join(
+                        KnowledgeQuery,
+                        KnowledgeQuery.id == KnowledgeQueryRepository.query_id,
+                    )
+                    .where(KnowledgeQuery.job_id == job_id)
+                    .order_by(KnowledgeQueryRepository.ordinal)
                 )
             )
-        if repository_id is None:
+        return repositories or (anchor,)
+
+    async def _authorize_all(self, actor: Actor, repository_ids, *, fresh: bool):
+        return tuple(
+            [
+                await self._authorize(actor, repository_id, fresh=fresh)
+                for repository_id in sorted(set(repository_ids), key=str)
+            ]
+        )
+
+    async def _lock_authorizations(self, session: AsyncSession, actor: Actor, keys):
+        # Same lock order as repository registration and lifecycle writers.
+        user = await check_actor(session, actor, lock=True)
+        installations = {}
+        for installation_id in sorted({key[5] for key in keys}):
+            installations[installation_id] = await session.scalar(
+                select(GitHubInstallation)
+                .where(GitHubInstallation.installation_id == installation_id)
+                .with_for_update()
+            )
+        repositories = {}
+        for repository_id in sorted({key[1] for key in keys}, key=str):
+            repositories[repository_id] = await session.scalar(
+                select(Repository)
+                .where(Repository.id == repository_id)
+                .with_for_update()
+            )
+        for key in keys:
+            installation = installations[key[5]]
+            repository = repositories[key[1]]
+            if (
+                installation is None
+                or repository is None
+                or not installation.available
+                or installation.needs_verification
+                or not repository.enabled
+                or not repository.available
+                or repository.needs_verification
+                or not self.policy.allowed(installation.installation_id)
+                or repository.installation_id != installation.installation_id
+                or key
+                != (
+                    actor.id,
+                    repository.id,
+                    user.auth_version,
+                    installation.auth_version,
+                    repository.auth_version,
+                    installation.installation_id,
+                )
+            ):
+                raise not_found()
+
+    async def visibility(self, actor: Actor, job_id: UUID):
+        """Return the visible Job plus every authorization snapshot it needs."""
+        repository_ids = await self._visible_scope(actor, job_id)
+        if repository_ids is None:
             async with self.factory.begin() as session:
                 await check_actor(session, actor)
                 await write_audit(
@@ -203,16 +285,24 @@ class JobService:
                     ),
                 )
             raise not_found()
-        snapshot = await self._authorize(actor, repository_id, fresh=False)
         try:
+            snapshots = await self._authorize_all(actor, repository_ids, fresh=False)
             async with self.factory.begin() as session:
-                await self._lock_authorization(session, actor, snapshot)
+                await self._lock_authorizations(session, actor, snapshots)
                 job = await session.scalar(
-                    select(Job).where(Job.id == job_id, Job.requested_by == actor.id)
+                    select(Job).where(
+                        Job.id == job_id,
+                        Job.requested_by == actor.id,
+                        Job.kind.in_(_VISIBLE_KINDS),
+                    )
                 )
                 if job is None:
                     raise not_found()
-                return JobView.model_validate(job)
+                return JobView.model_validate(job), snapshots
         except AppError as error:
-            await self.policy.audit_denial(actor, error, repository_id)
+            await self.policy.audit_denial(actor, error, repository_ids[0])
             raise
+
+    async def get_visible(self, actor: Actor, job_id: UUID) -> JobView:
+        view, _ = await self.visibility(actor, job_id)
+        return view

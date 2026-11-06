@@ -15,6 +15,12 @@ from support.job_env import job_env as job_env  # noqa: PLC0414
 from support.repository_env import repo_env as repo_env  # noqa: PLC0414
 
 
+@pytest.fixture
+def tmp_path(workspace_tmp_path):
+    """Opt in to newly owned workspace files without changing Windows ACLs."""
+    return workspace_tmp_path
+
+
 @pytest_asyncio.fixture
 async def worker_env(job_env):
     """Probe-only Worker tests explicitly arrange no due background sync."""
@@ -28,6 +34,7 @@ async def worker_env(job_env):
                 repository_id=env.repository.id,
                 status="completed",
                 next_due_at=now + timedelta(days=1),
+                next_reconcile_at=now + timedelta(days=1),
                 last_reconciled_at=now,
             )
         )

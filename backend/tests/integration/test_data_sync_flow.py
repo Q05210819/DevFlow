@@ -35,6 +35,11 @@ from devflow.worker import run_worker
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture
+def tmp_path(workspace_tmp_path):
+    return workspace_tmp_path
+
+
 @pytest_asyncio.fixture
 async def data_flow(migrated_database, tmp_path):
     settings = synthetic_settings(

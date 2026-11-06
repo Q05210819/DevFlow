@@ -9,14 +9,42 @@ services:
     environment:
       APP_ENV: development
       PUBLIC_BASE_URL: http://localhost:8080
+      MILVUS_URI: http://milvus:19530
   worker:
     environment:
       APP_ENV: development
       PUBLIC_BASE_URL: http://localhost:8080
+      MILVUS_URI: http://milvus:19530
   migrate:
     environment:
       APP_ENV: development
       PUBLIC_BASE_URL: http://localhost:8080
+      MILVUS_URI: http://milvus:19530
   postgres:
     ports:
       - "127.0.0.1:55440:5432"
+
+  # The base Milvus stack is always on in production. Development makes it
+  # opt-in (`--profile milvus`); host port 19531 avoids colliding with the
+  # isolated test stack, which owns 19530.
+  etcd:
+    profiles: ["milvus"]
+  minio:
+    profiles: ["milvus"]
+  milvus:
+    profiles: ["milvus"]
+    ports:
+      - "127.0.0.1:19531:19530"
+      - "127.0.0.1:9092:9091"
+
+  # Optional local model worker (`--profile milvus --profile models`). It
+  # inherits the production image and read-only model mount; MODEL_DEVICE,
+  # MODEL_DTYPE and DEVFLOW_MODEL_DIR still have to be chosen explicitly.
+  # CPU or time-shared loading needs its own measured evidence and must not be
+  # described as a same-host full-stack pass.
+  model-worker:
+    profiles: ["models"]
+    environment:
+      APP_ENV: development
+      PUBLIC_BASE_URL: http://localhost:8080
+      MILVUS_URI: http://milvus:19530

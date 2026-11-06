@@ -39,13 +39,13 @@ export function useRepository() {
   if (!scope) throw new Error("Repository scope is required");
   return scope;
 }
-export function useRepositoryQuery<T>(identity: readonly unknown[], suffix: string, params: Record<string, string> = {}, poll = false) {
+export function useRepositoryQuery<T>(identity: readonly unknown[], suffix: string, params: Record<string, string> = {}, poll = false, enabled = true) {
   const scope = useRepository();
   const search = new URLSearchParams(params).toString();
   return useQuery({
     queryKey: [...scope.prefix, ...identity],
     queryFn: ({ signal }) => scope.access.request<T>(`${scope.path}${suffix}${search ? `?${search}` : ""}`, { signal }),
-    enabled: scope.access.active && !scope.access.denied,
+    enabled: enabled && scope.access.active && !scope.access.denied,
     retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
     meta: { poll },
   });
@@ -77,8 +77,8 @@ export function useRepositoryPolling(prefix: readonly string[], access: ReturnTy
       const active = queries();
       if (!polled) failures = active.some(query => query.state.error && (!(query.state.error instanceof ApiError) || query.state.error.status >= 500)) ? 1 : 0;
       const pending = active.some(query => {
-        const data = query.state.data as { status?: string; refresh_status?: string } | undefined;
-        return pendingStatus(data?.status ?? data?.refresh_status);
+        const data = query.state.data as { status?: string; refresh_status?: string; corpus?: { status?: string } } | undefined;
+        return pendingStatus(data?.status ?? data?.refresh_status) || ["queued", "building"].includes(data?.corpus?.status ?? "");
       });
       if (!pending) { clearTimeout(watchdog); watchdog = undefined; return; }
       // This deadline survives an in-flight fetch; query-cache events may clear the poll timer.

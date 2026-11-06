@@ -65,6 +65,7 @@ tbody tr:last-child > * { border-bottom: 0; }
 .fact-fields dt { color: #52657d; margin-top: .75rem; }
 .fact-fields dd { margin: .25rem 0; white-space: normal; overflow-wrap: anywhere; }
 .fact-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
+.code-text { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; font: .875rem/1.7 Consolas, monospace; margin: 1rem 0; padding: 1rem; background: #f6f7f9; border: 1px solid #d9dfe7; }
 .fact-list { list-style: none; padding: 0; display: grid; gap: .75rem; margin: 1rem 0; }
 .fact-record, .fact-collection { margin-top: 1.25rem; }
 .repository-detail input, .repository-detail select { max-width: 100%; min-width: 0; }

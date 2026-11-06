@@ -10,15 +10,15 @@ from cryptography.fernet import Fernet
 
 
 @pytest_asyncio.fixture
-async def auth_env(db_factory, migrated_database, tmp_path):
+async def auth_env(db_factory, migrated_database, workspace_tmp_path):
     from devflow.app import create_app
     from devflow.github.client import GitHubClient
 
-    client_secret = tmp_path / "client-secret"
+    client_secret = workspace_tmp_path / "client-secret"
     client_secret.write_text("synthetic-client-secret")
-    signing_key = tmp_path / "signing-key"
+    signing_key = workspace_tmp_path / "signing-key"
     signing_key.write_bytes(b"synthetic-signing-key-material-32bytes")
-    cipher_key = tmp_path / "cipher-key"
+    cipher_key = workspace_tmp_path / "cipher-key"
     cipher_key.write_bytes(Fernet.generate_key())
     settings = migrated_database[0].model_copy(
         update={

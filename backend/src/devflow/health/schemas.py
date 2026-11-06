@@ -11,6 +11,43 @@ from devflow.facts.schemas import (
     UTCDateTime,
 )
 from devflow.jobs.schemas import JobErrorCode
+from devflow.workspace.schemas import WorkspaceSelection
+
+
+class WorkspaceEvidence(StrictDTO):
+    selection: WorkspaceSelection
+    workspace_id: UUID | None = None
+    source_repository_id: UUID | None = None
+    commit_sha: SHA | None = None
+    availability: Literal["available", "unprepared", "unavailable", "unknown"]
+    reason: (
+        Literal[
+            "not_prepared",
+            "version_unavailable",
+            "scope_unavailable",
+            "verification_limit",
+            "verification_unavailable",
+            "version_changed",
+        ]
+        | None
+    ) = None
+    checked_at: UTCDateTime | None = None
+    basis: Literal["local_pin_commit_root_tree_identity"] = (
+        "local_pin_commit_root_tree_identity"
+    )
+
+
+class WorkspaceSelectionSummary(StrictDTO):
+    selection_order: Literal["default; PR number/base/head; frozen CI order"] = (
+        "default; PR number/base/head; frozen CI order"
+    )
+    basis: Literal["frozen_health_visible_evidence"] = "frozen_health_visible_evidence"
+    total_candidates: int = Field(ge=0, le=401)
+    returned_count: int = Field(ge=0, le=401)
+    truncated: bool = False
+    checked_pins: int = Field(ge=0, le=16)
+    checked_count: int = Field(ge=0, le=401)
+    unverified_count: int = Field(ge=0, le=401)
 
 
 class HealthRefresh(StrictDTO):
@@ -90,6 +127,10 @@ class HealthManifest(StrictDTO):
     actions: list[CIRunVersion] = Field(max_length=200)
     actions_selection: Selection
     unlisted_evidence: Literal["unknown"] = "unknown"
+    workspace_versions: list[WorkspaceEvidence] = Field(
+        default_factory=list, max_length=401
+    )
+    workspace_selection: WorkspaceSelectionSummary | None = None
 
 
 class HealthCounts(PopulationCounts):
@@ -109,7 +150,7 @@ class HealthSnapshotView(StrictDTO):
     counts: HealthCounts
     coverage: list[FactCoverage] = Field(max_length=3)
     manifest: HealthManifest
-    workspace: Literal["unavailable"] = "unavailable"
+    workspace: Literal["available", "partial", "unavailable", "unknown"] = "unknown"
 
 
 class HealthView(StrictDTO):

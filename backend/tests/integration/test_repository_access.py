@@ -9,6 +9,12 @@ from support.repository_env import repo_env as repo_env  # noqa: PLC0414
 from devflow.errors import AppError
 
 
+@pytest.fixture
+def tmp_path(workspace_tmp_path):
+    # Explicit R15 opt-in for new owned fixture files on Windows.
+    return workspace_tmp_path
+
+
 @pytest.mark.asyncio
 async def test_admin_cannot_bypass_github_access(repo_env):
     env = repo_env

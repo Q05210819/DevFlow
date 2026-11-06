@@ -14,6 +14,12 @@ from devflow.jobs.queue import Queue
 from devflow.worker import _execute
 
 
+@pytest.fixture
+def tmp_path(workspace_tmp_path):
+    """Opt in to newly owned workspace files without changing Windows ACLs."""
+    return workspace_tmp_path
+
+
 async def observations(env, job_id):
     async with env.factory() as session:
         state = (

@@ -62,7 +62,11 @@ async def sync_view(db, repository_id):
                 + int(checkpoint.active_window is not None),
                 unresolved_windows=len(checkpoint.unresolved_windows),
                 current_target=checkpoint.target is not None,
-                enumeration_complete=True if cursor.status == "complete" else None,
+                enumeration_complete=True
+                if checkpoint.mode != "targeted"
+                and checkpoint.stage == "done"
+                and cursor.status == "complete"
+                else None,
                 mode=checkpoint.mode,
                 stage=checkpoint.stage,
                 reason=checkpoint.gap_reason,

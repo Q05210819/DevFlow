@@ -23,10 +23,33 @@ ERROR_CODES = frozenset(
         "service_unavailable",
         "last_admin",
         "internal_error",
+        "workspace_not_found",
+        "fork_source_unavailable",
+        "workspace_busy",
+        "version_unavailable",
+        "version_changed",
+        "git_failed",
+        "cleanup_required",
+        "storage_exhausted",
+        "stage_expired",
+        "payload_too_large",
+        "build_deadline_exceeded",
+        "index_failed",
+        "index_not_ready",
+        "retrieval_unavailable",
+        "answer_validation_failed",
     }
 )
 RETRYABLE_ERROR_CODES = frozenset(
-    {"github_rate_limited", "github_unavailable", "attempt_timeout"}
+    {
+        "github_rate_limited",
+        "github_unavailable",
+        "attempt_timeout",
+        "workspace_busy",
+        # Milvus/model unavailability is transient and leaves a resumable
+        # version-scoped build; it must not burn the attempt budget as terminal.
+        "service_unavailable",
+    }
 )
 
 

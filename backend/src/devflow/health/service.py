@@ -445,8 +445,9 @@ async def health_view(db, repo):
 
 
 class HealthService:
-    def __init__(self, factory, policy, settings):
+    def __init__(self, factory, policy, settings, *, cache=None):
         self.factory, self.policy, self.settings = factory, policy, settings
+        self.cache = cache
 
     async def _locked(self, db, lease, frozen=None):
         repo = await db.scalar(select(Job.repository_id).where(Job.id == lease.job_id))
@@ -484,6 +485,24 @@ class HealthService:
         return installation, repository, state, job, now
 
     async def freeze(self, lease):
+        from devflow.workspace.git import GitCache
+        from devflow.workspace.process import GitRunner
+        from devflow.workspace.retention import WorkspaceRetention
+
+        retention = WorkspaceRetention(
+            self.factory,
+            self.cache
+            or GitCache(self.settings.workspace_cache_root, GitRunner(self.settings)),
+            self.settings,
+        )
+        async with transaction(self.factory) as db:
+            rows = await self._locked(db, lease)
+            if rows is None:
+                raise AppError("permission_revoked", 404, "Health scope unavailable")
+            _, repository, state, _, now = rows
+            preview = await compute_snapshot(db, repository, state, now)
+            repo, branch = repository.id, repository.default_branch
+        observed = await retention.health_preflight(preview, repo, branch)
         async with transaction(self.factory) as db:
             rows = await self._locked(db, lease)
             if rows is None:
@@ -491,6 +510,9 @@ class HealthService:
             installation, repository, state, job, now = rows
             state.health_generation += 1
             snapshot = await compute_snapshot(db, repository, state, now)
+            snapshot = await retention.health_evidence(
+                db, snapshot, repository.default_branch, observed
+            )
             return FrozenHealth(
                 lease,
                 scope_of(installation, repository),

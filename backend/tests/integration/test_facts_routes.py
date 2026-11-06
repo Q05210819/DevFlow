@@ -12,6 +12,12 @@ from devflow.repositories.models import Repository
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture
+def tmp_path(workspace_tmp_path):
+    # Explicit R15 opt-in for new owned fixture files on Windows.
+    return workspace_tmp_path
+
+
 async def seed(env, count=31):
     repo = await env.service.register(env.actor, 11, 101)
     async with env.factory.begin() as db:

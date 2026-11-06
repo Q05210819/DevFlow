@@ -31,6 +31,7 @@ AuditAction = Literal[
     "sync.requested",
     "backfill.requested",
     "health.requested",
+    "workspace.requested",
 ]
 ReasonCode = Literal[
     "unauthenticated",
@@ -61,6 +62,15 @@ ReasonCode = Literal[
     "version_unavailable",
     "source_limit",
     "budget_exhausted",
+    "workspace_busy",
+    "workspace_not_found",
+    "fork_source_unavailable",
+    "git_failed",
+    "cleanup_required",
+    "storage_exhausted",
+    "service_unavailable",
+    "build_deadline_exceeded",
+    "index_failed",
 ]
 
 
@@ -72,7 +82,14 @@ class AuditEntry(BaseModel):
     actor_id: UUID | None = None
     action: AuditAction
     resource_type: Literal[
-        "user", "session", "repository", "installation", "webhook", "job", "credential"
+        "user",
+        "session",
+        "repository",
+        "installation",
+        "webhook",
+        "job",
+        "credential",
+        "workspace",
     ]
     resource_id: UUID | None = None
     outcome: Literal["success", "failure"]

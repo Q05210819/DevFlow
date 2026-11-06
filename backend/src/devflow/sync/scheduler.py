@@ -5,7 +5,7 @@ import json
 from datetime import timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from devflow.audit.service import AuditEntry, write_audit
 from devflow.errors import AppError
@@ -225,6 +225,18 @@ class SyncScheduler:
 
     async def tick(self) -> int:
         async with transaction(self.factory) as db:
+            now = await db.scalar(select(func.clock_timestamp()))
+            daily_due = RepositorySync.next_reconcile_at.is_(None) | (
+                RepositorySync.next_reconcile_at <= now
+            )
+            periodic_due = RepositorySync.next_due_at.is_(None) | (
+                RepositorySync.next_due_at <= now
+            )
+            full_demand = select(SyncDemand.sequence).where(
+                SyncDemand.repository_id == Repository.id,
+                SyncDemand.target.is_(None),
+                SyncDemand.backfill.is_(None),
+            )
             ids = list(
                 await db.scalars(
                     select(Repository.id)
@@ -233,14 +245,20 @@ class SyncScheduler:
                         Repository.enabled.is_(True),
                         Repository.available.is_(True),
                         Repository.needs_verification.is_(False),
-                        RepositorySync.active_job_id.is_(None),
                         (
                             RepositorySync.status.is_(None)
-                            | RepositorySync.status.in_(("idle", "completed"))
+                            | RepositorySync.status.in_(
+                                ("idle", "completed", "queued", "running", "retry_wait")
+                            )
                         ),
-                        (
-                            RepositorySync.next_due_at.is_(None)
-                            | (RepositorySync.next_due_at <= func.clock_timestamp())
+                        or_(
+                            and_(
+                                daily_due,
+                                ~full_demand.where(
+                                    SyncDemand.reason.in_(("registration", "reconcile"))
+                                ).exists(),
+                            ),
+                            and_(~daily_due, periodic_due, ~full_demand.exists()),
                         ),
                     )
                     .order_by(
@@ -257,21 +275,32 @@ class SyncScheduler:
                     continue
                 state = rows[2]
                 now = await db.scalar(select(func.clock_timestamp()))
-                if state and (
-                    state.active_job_id
-                    or state.status not in {"idle", "completed"}
-                    or (state.next_due_at and state.next_due_at > now)
-                ):
+                if state and state.status in {"failed", "budget_exhausted"}:
                     continue
                 reason = (
                     "reconcile"
                     if state is None
-                    or state.last_reconciled_at is None
-                    or state.last_reconciled_at
-                    + timedelta(seconds=self.settings.sync_reconcile_seconds)
-                    <= now
+                    or state.next_reconcile_at is None
+                    or state.next_reconcile_at <= now
                     else "periodic"
                 )
+                if (
+                    reason == "periodic"
+                    and state.next_due_at
+                    and state.next_due_at > now
+                ):
+                    continue
+                pending = select(SyncDemand.sequence).where(
+                    SyncDemand.repository_id == identity,
+                    SyncDemand.target.is_(None),
+                    SyncDemand.backfill.is_(None),
+                )
+                if reason == "reconcile":
+                    pending = pending.where(
+                        SyncDemand.reason.in_(("registration", "reconcile"))
+                    )
+                if await db.scalar(pending.limit(1)) is not None:
+                    continue
                 await request_sync(db, identity, reason=reason)
                 scheduled += 1
         return scheduled

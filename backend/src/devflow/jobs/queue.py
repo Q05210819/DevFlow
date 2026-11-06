@@ -14,7 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from devflow.audit.service import AuditEntry, write_audit
 from devflow.auth.models import User
 from devflow.jobs.models import Job
-from devflow.jobs.schemas import HealthResult, JobErrorCode, ProbeResult, SyncResult
+from devflow.jobs.schemas import (
+    MODEL_INTERACTIVE_STREAK_LIMIT,
+    MODEL_JOB_KINDS,
+    HealthResult,
+    JobErrorCode,
+    ProbeResult,
+    SyncResult,
+)
 from devflow.jobs.service import append_event
 from devflow.logging import logger
 from devflow.repositories.models import Repository
@@ -22,6 +29,15 @@ from devflow.sync.models import SyncCursor
 from devflow.sync.scope import authorized, lock_scope
 
 _ERROR = TypeAdapter(JobErrorCode)
+# Admit a newly persisted kind only when its real Worker handler ships.
+_EXECUTABLE_KINDS = (
+    "repository.access_probe",
+    "repository.sync",
+    "repository.health",
+    "repository.workspace",
+    "knowledge.import",
+    "knowledge.cleanup",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +62,9 @@ class Queue:
         self.lease_seconds = lease_seconds
         self.backoffs = (retry_first_seconds, retry_second_seconds)
         self.settings = settings
+        # Scheduling fairness is process-local by design. Durable deadlines,
+        # attempts and generations remain in PostgreSQL across restarts.
+        self._interactive_streak = 0
 
     @asynccontextmanager
     async def _transaction(self):
@@ -56,12 +75,60 @@ class Queue:
             await session.execute(text("SET LOCAL lock_timeout = '2s'"))
             yield session
 
-    async def claim(self, owner: UUID) -> Lease | None:
+    async def claim(
+        self,
+        owner: UUID,
+        *,
+        allowed_kinds: frozenset[str] | None = None,
+        prefer_kinds: tuple[str, ...] = (),
+    ) -> Lease | None:
+        """Claim one due Job, optionally constrained to an explicit kind set.
+
+        ``None`` means the existing ordinary Worker kinds, never all registered
+        kinds. Model Workers pass their own set and a preference for interactive
+        work. The preference only affects candidate order; the locked claim
+        rechecks the full allowed set and the observed kind.
+        """
+
+        allowed = _EXECUTABLE_KINDS if allowed_kinds is None else tuple(allowed_kinds)
+        if not allowed:
+            return None
+        preferred = tuple(kind for kind in prefer_kinds if kind in allowed)
+        if not preferred:
+            return await self._claim_candidates(owner, allowed, allowed)
+
+        background = tuple(kind for kind in allowed if kind not in preferred)
+        if self._interactive_streak < MODEL_INTERACTIVE_STREAK_LIMIT:
+            lease = await self._claim_candidates(owner, preferred, allowed)
+            if lease is not None:
+                self._interactive_streak += 1
+                return lease
+            if not background:
+                return None
+            lease = await self._claim_candidates(owner, background, allowed)
+            if lease is not None:
+                self._interactive_streak = 0
+            return lease
+
+        # After the interactive streak, give background one opportunity. If no
+        # background work is due, continue interactive rather than idling.
+        if background:
+            lease = await self._claim_candidates(owner, background, allowed)
+            if lease is not None:
+                self._interactive_streak = 0
+                return lease
+        lease = await self._claim_candidates(owner, preferred, allowed)
+        if lease is not None:
+            self._interactive_streak += 1
+        return lease
+
+    async def _claim_candidates(self, owner, kinds, allowed):
         async with self._transaction() as session:
             candidates = list(
                 await session.execute(
                     select(Job.id, Job.kind, Job.repository_id)
                     .where(
+                        Job.kind.in_(kinds),
                         Job.status.in_(("queued", "retry_wait")),
                         Job.available_at <= func.clock_timestamp(),
                         Job.attempt < Job.max_attempts,
@@ -70,13 +137,28 @@ class Queue:
                     .limit(100)
                 )
             )
+        allowed_set = frozenset(allowed)
         for identity, kind, repository_id in candidates:
-            lease = await self._claim_one(owner, identity, kind, repository_id)
+            lease = await self._claim_one(
+                owner,
+                identity,
+                kind,
+                repository_id,
+                allowed_kinds=allowed_set,
+            )
             if lease is not None:
                 return lease
         return None
 
-    async def _claim_one(self, owner, identity, kind, repository_id):
+    async def _claim_one(
+        self, owner, identity, kind, repository_id, *, allowed_kinds=None
+    ):
+        if allowed_kinds is not None and kind not in allowed_kinds:
+            return None
+        if kind == "repository.workspace":
+            return await self._claim_workspace(
+                owner, identity, allowed_kinds=allowed_kinds
+            )
         async with self._transaction() as session:
             state = None
             if kind == "repository.health":
@@ -123,6 +205,7 @@ class Queue:
                 select(Job)
                 .where(
                     Job.id == identity,
+                    Job.kind == kind,
                     Job.status.in_(("queued", "retry_wait")),
                     Job.available_at <= func.clock_timestamp(),
                     Job.attempt < Job.max_attempts,
@@ -177,6 +260,79 @@ class Queue:
         _metric("queue.claim", lease, queue_wait_seconds=wait)
         return lease
 
+    async def _claim_workspace(self, owner, identity, *, allowed_kinds=None):
+        if allowed_kinds is not None and "repository.workspace" not in allowed_kinds:
+            return None
+        from devflow.errors import AppError
+        from devflow.workspace.guards import (
+            UNRESOLVED,
+            admission_lock,
+            revoke_expired_reservations,
+        )
+        from devflow.workspace.models import WorkspaceProcessGuard
+        from devflow.workspace.service import job_version
+
+        async with self._transaction() as session:
+            await admission_lock(session)
+            await revoke_expired_reservations(session)
+            if await session.scalar(
+                select(Job.id)
+                .where(Job.kind == "repository.workspace", Job.status == "running")
+                .limit(1)
+            ) or await session.scalar(
+                select(WorkspaceProcessGuard.operation_id)
+                .where(
+                    WorkspaceProcessGuard.kind.in_(("write", "gc")),
+                    WorkspaceProcessGuard.state.in_(UNRESOLVED),
+                )
+                .limit(1)
+            ):
+                return None
+            allowed = True
+            try:
+                await job_version(session, identity, self.settings)
+            except AppError:
+                allowed = False
+            job = await session.scalar(
+                select(Job)
+                .where(
+                    Job.id == identity,
+                    Job.kind == "repository.workspace",
+                    Job.status.in_(("queued", "retry_wait")),
+                    Job.available_at <= func.clock_timestamp(),
+                    Job.attempt < Job.max_attempts,
+                )
+                .with_for_update(skip_locked=True)
+            )
+            now = await session.scalar(select(func.clock_timestamp()))
+            if job is None or job.available_at > now:
+                return None
+            if not allowed:
+                await self._failure(
+                    session, job, now, "permission_revoked", False, None
+                )
+                return None
+            job.status, job.error_code = "running", None
+            job.attempt += 1
+            job.lease_generation += 1
+            job.lease_owner = owner
+            job.lease_expires_at = now + timedelta(seconds=self.lease_seconds)
+            job.updated_at = job.attempt_started_at = now
+            job.request_count = 0
+            await self._transition(session, job, "job.started")
+            return Lease(job.id, owner, job.lease_generation, job.attempt)
+
+    async def attempt_timeout(self, lease, default):
+        async with self.factory() as session:
+            kind = await session.scalar(select(Job.kind).where(Job.id == lease.job_id))
+        if kind == "repository.workspace":
+            return 600
+        if kind in {"knowledge.import", "knowledge.index_batch"}:
+            # One background batch must never occupy the model slot longer
+            # than the fixed 120-second attempt budget.
+            return min(120, default)
+        return default
+
     async def _owned(self, session, lease):
         job = await session.scalar(
             select(Job)
@@ -215,6 +371,19 @@ class Queue:
                     select(Job.kind, Job.repository_id).where(Job.id == lease.job_id)
                 )
             ).first()
+            if identity and (
+                identity.kind
+                in {
+                    "repository.workspace",
+                    "knowledge.import",
+                    "knowledge.cleanup",
+                }
+                or identity.kind in MODEL_JOB_KINDS
+            ):
+                # Workspace publication, knowledge writes, bounded cleanup and
+                # model handlers must commit together with their own terminal
+                # transition.
+                return False
             if identity and identity.kind in {"repository.sync", "repository.health"}:
                 rows = await lock_scope(session, identity.repository_id)
                 if rows is None or rows[2] is not None:
@@ -250,6 +419,20 @@ class Queue:
             code = _ERROR.validate_python(code)
         except ValidationError:
             code, retryable = "internal_error", False
+        async with self.factory() as lookup:
+            kind = await lookup.scalar(select(Job.kind).where(Job.id == lease.job_id))
+        if kind == "knowledge.import":
+            from devflow.knowledge.job_failure import fail_import
+
+            return await fail_import(
+                self, lease.job_id, code, retryable, retry_at, lease=lease
+            )
+        if kind == "knowledge.index_batch":
+            from devflow.knowledge.job_failure import fail_index_build
+
+            return await fail_index_build(
+                self, lease.job_id, code, retryable, retry_at, lease=lease
+            )
         async with self._transaction() as session:
             identity = (
                 await session.execute(
@@ -318,6 +501,21 @@ class Queue:
                 )
             )
         for identity, kind, repository_id in candidates:
+            if kind in {"knowledge.import", "knowledge.index_batch"}:
+                from devflow.knowledge.job_failure import (
+                    fail_import,
+                    fail_index_build,
+                )
+
+                failed = (
+                    await fail_import(self, identity, "lease_expired", True)
+                    if kind == "knowledge.import"
+                    else await fail_index_build(self, identity, "lease_expired", True)
+                )
+                if failed:
+                    # Metrics below consume Lease values only for ordinary Jobs.
+                    recovered.append(None)
+                continue
             async with self._transaction() as session:
                 state = None
                 if kind in {"repository.sync", "repository.health"}:
@@ -345,7 +543,8 @@ class Queue:
                 )
                 recovered.append(old)
         for lease in recovered:
-            _metric("queue.recovered", lease, error_code="lease_expired")
+            if lease is not None:
+                _metric("queue.recovered", lease, error_code="lease_expired")
         return len(recovered)
 
     async def _sync_failure(self, session, state, job, code, *, scope=None):
@@ -400,7 +599,7 @@ class Queue:
             select(SyncCursor).where(
                 SyncCursor.repository_id == job.repository_id,
                 SyncCursor.stream.in_(job.input.get("streams", ())),
-                SyncCursor.status != "complete",
+                SyncCursor.checkpoint["mode"].astext != "targeted",
                 SyncCursor.checkpoint["stage"].astext != "done",
             )
         )

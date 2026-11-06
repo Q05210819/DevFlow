@@ -34,11 +34,13 @@ class CursorCodec:
         self._key = signing_key
 
     def encode_cursor(
-        self, actor_id: UUID, purpose: str, position: dict, limit: int
+        self, actor_id: UUID, purpose: str, position: dict, limit: int, *, max_limit=100
     ) -> str:
         if (
             type(limit) is not int
-            or not 1 <= limit <= 100
+            or type(max_limit) is not int
+            or not 1 <= max_limit <= 200
+            or not 1 <= limit <= max_limit
             or not purpose
             or not isinstance(position, dict)
         ):
@@ -66,14 +68,16 @@ class CursorCodec:
         return token
 
     def decode_cursor(
-        self, token: str, actor_id: UUID, purpose: str, limit: int
+        self, token: str, actor_id: UUID, purpose: str, limit: int, *, max_limit=100
     ) -> dict:
         try:
             if (
                 not isinstance(token, str)
                 or not 1 <= len(token) <= 8192
                 or type(limit) is not int
-                or not 1 <= limit <= 100
+                or type(max_limit) is not int
+                or not 1 <= max_limit <= 200
+                or not 1 <= limit <= max_limit
             ):
                 raise ValueError
             raw = base64.b64decode(

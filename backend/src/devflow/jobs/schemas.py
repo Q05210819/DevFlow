@@ -7,6 +7,29 @@ from pydantic import BaseModel, ConfigDict, Field
 from devflow.facts.schemas import StrictDTO
 
 JobStatus = Literal["queued", "running", "retry_wait", "succeeded", "failed"]
+ORDINARY_JOB_KINDS = frozenset(
+    {
+        "repository.access_probe",
+        "repository.sync",
+        "repository.health",
+        "repository.workspace",
+        "knowledge.import",
+        "knowledge.cleanup",
+    }
+)
+MODEL_JOB_KINDS = frozenset(
+    {
+        "knowledge.index_batch",
+        "knowledge.query",
+        "chat.run",
+    }
+)
+# Interactive model work is preferred, but background indexing must still make
+# progress. The streak is per Queue/owner process and may reset on restart; Job
+# deadlines, attempts and generation remain durable in PostgreSQL.
+INTERACTIVE_MODEL_JOB_KINDS = ("knowledge.query", "chat.run")
+MODEL_INTERACTIVE_STREAK_LIMIT = 10
+MODEL_BACKGROUND_BATCH_CHUNKS = 16
 JobErrorCode = Literal[
     "unauthenticated",
     "resource_not_found",
@@ -26,6 +49,18 @@ JobErrorCode = Literal[
     "version_unavailable",
     "source_limit",
     "budget_exhausted",
+    "workspace_busy",
+    "workspace_not_found",
+    "fork_source_unavailable",
+    "git_failed",
+    "cleanup_required",
+    "storage_exhausted",
+    "service_unavailable",
+    "build_deadline_exceeded",
+    "index_failed",
+    "index_not_ready",
+    "retrieval_unavailable",
+    "answer_validation_failed",
 ]
 IdempotencyKey = Annotated[str, Field(strict=True, pattern=r"^[!-~]{1,128}$")]
 
@@ -48,6 +83,42 @@ class SyncResult(StrictDTO):
 class HealthResult(StrictDTO):
     snapshot_id: UUID
     generation: int = Field(strict=True, ge=1)
+
+
+class KnowledgeImportInput(StrictDTO):
+    import_id: UUID
+    target_generation: int = Field(strict=True, ge=1)
+
+
+class KnowledgeIndexInput(StrictDTO):
+    """One durable batch Job for an immutable index candidate."""
+
+    version: Literal[1]
+    index_id: UUID
+
+
+class KnowledgeImportResult(StrictDTO):
+    import_id: UUID
+    target_generation: int = Field(strict=True, ge=1)
+    status: Literal["building", "ready", "ready_partial"]
+
+
+class KnowledgeCleanupInput(StrictDTO):
+    """Finite maintenance input; the cursor is server-derived pagination."""
+
+    version: Literal[1]
+    limit: int = Field(strict=True, ge=1, le=100)
+    after: UUID | None = None
+
+
+class KnowledgeCleanupResult(StrictDTO):
+    examined: int = Field(strict=True, ge=0, le=100)
+    reclaimed: int = Field(strict=True, ge=0, le=100)
+    deferred: int = Field(strict=True, ge=0, le=100)
+    bytes_reclaimed: int = Field(strict=True, ge=0)
+    chunks_reclaimed: int = Field(strict=True, ge=0)
+    wrapped: bool = False
+    cursor: UUID | None = None
 
 
 class EventPayload(BaseModel):

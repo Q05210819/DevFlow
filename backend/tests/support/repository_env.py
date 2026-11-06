@@ -24,7 +24,7 @@ def repository(number=101, name="team/private"):
 
 
 @pytest_asyncio.fixture
-async def repo_env(db_factory, settings_factory, tmp_path):
+async def repo_env(db_factory, settings_factory, workspace_tmp_path):
     from devflow.auth.models import User
     from devflow.auth.types import Actor
     from devflow.github.client import GitHubClient
@@ -34,7 +34,7 @@ async def repo_env(db_factory, settings_factory, tmp_path):
     from devflow.repositories.service import RepositoryService
     from devflow.security import CredentialCipher
 
-    private = tmp_path / "private"
+    private = workspace_tmp_path / "private"
     private.write_bytes(
         rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
             serialization.Encoding.PEM,
@@ -42,9 +42,9 @@ async def repo_env(db_factory, settings_factory, tmp_path):
             serialization.NoEncryption(),
         )
     )
-    signing = tmp_path / "signing"
+    signing = workspace_tmp_path / "signing"
     signing.write_bytes(b"s" * 32)
-    encryption = tmp_path / "encryption"
+    encryption = workspace_tmp_path / "encryption"
     encryption.write_bytes(Fernet.generate_key())
     settings = settings_factory(
         database_url=db_factory.kw["bind"].url.render_as_string(hide_password=False),

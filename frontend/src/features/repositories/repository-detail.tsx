@@ -48,7 +48,7 @@ function AuthorizedRepository({ userId, repositoryId, children }: { userId: stri
     <main className="content repository-detail">
       <span className="eyebrow">工作台 / 仓库事实</span><h1>{repository.data.full_name}</h1>
       <p>平台 ID：{repository.data.id} · GitHub ID：{repository.data.github_repository_id} · 默认分支：{repository.data.default_branch ?? "未知"}</p>
-      <nav className="repository-tabs" aria-label="仓库导航">{[["", "概览"], ["/issues", "Issues"], ["/pulls", "PRs"], ["/actions", "Actions"]].map(([suffix, label]) => <Link key={suffix} href={`${root}${suffix}`} aria-current={pathname === `${root}${suffix}` ? "page" : undefined}>{label}</Link>)}</nav>
+      <nav className="repository-tabs" aria-label="仓库导航">{[["", "概览"], ["/issues", "Issues"], ["/pulls", "PRs"], ["/actions", "Actions"], ["/code", "代码"], ["/knowledge", "知识库"]].map(([suffix, label]) => <Link key={suffix} href={`${root}${suffix}`} aria-current={pathname === `${root}${suffix}` ? "page" : undefined}>{label}</Link>)}</nav>
       {sync.isError && <p role="alert" className="banner error">同步状态刷新失败，保留上次已确认的状态与时间。{errorMessage(sync.error)}</p>}
       {polling.paused && <p role="status" className="banner">状态轮询已暂停（达到 5 分钟或连续 3 次传输失败）。<button onClick={polling.recover}>恢复状态轮询</button></p>}
       {children}

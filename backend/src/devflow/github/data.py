@@ -2,7 +2,7 @@
 
 import re
 from enum import StrEnum
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -25,6 +25,9 @@ class DataEndpoint(StrEnum):
     ATTEMPT = "attempt"
     JOBS = "jobs"
     REPOSITORY = "repository"
+    REF = "ref"
+    TAG = "tag"
+    COMMIT = "commit"
 
 
 class DataResponse(BaseModel):
@@ -59,6 +62,9 @@ _ENDPOINTS = {
     DataEndpoint.ATTEMPT: ("/actions/runs/{target}/attempts/{attempt}", None, set()),
     DataEndpoint.JOBS: ("/actions/runs/{target}/jobs", "jobs", {"filter"}),
     DataEndpoint.REPOSITORY: ("", None, set()),
+    DataEndpoint.REF: ("/git/ref/{ref}", None, set()),
+    DataEndpoint.TAG: ("/git/tags/{oid}", None, set()),
+    DataEndpoint.COMMIT: ("/git/commits/{oid}", None, set()),
 }
 
 
@@ -125,6 +131,9 @@ class GitHubDataClient:
         attempt: int | None = None,
         page: int = 1,
         filters: dict | None = None,
+        ref: str | None = None,
+        oid: str | None = None,
+        installation: bool = True,
     ) -> DataResponse:
         if (
             not isinstance(full_name, str)
@@ -138,6 +147,24 @@ class GitHubDataClient:
         except (ValueError, TypeError):
             raise _invalid() from None
         path, kind, allowed_filters = _ENDPOINTS[endpoint]
+        if "{ref}" in path:
+            from devflow.workspace.git import valid_ref
+
+            if (
+                not isinstance(ref, str)
+                or not ref.startswith(("heads/", "tags/"))
+                or not valid_ref("refs/" + ref)
+            ):
+                raise _invalid()
+        elif ref is not None:
+            raise _invalid()
+        if "{oid}" in path:
+            if not isinstance(oid, str) or re.fullmatch(r"[0-9a-f]{40}", oid) is None:
+                raise _invalid()
+        elif oid is not None:
+            raise _invalid()
+        if type(installation) is not bool:
+            raise _invalid()
         _positive_number(page)
         if "{target}" in path:
             _positive_number(target)
@@ -174,10 +201,10 @@ class GitHubDataClient:
         )
         response = await self._client._request(
             "GET",
-            f"{REST_URL}/repos/{full_name}{path.format(target=target, attempt=attempt)}",
+            f"{REST_URL}/repos/{full_name}{path.format(target=target, attempt=attempt, ref=quote(ref or '', safe='/'), oid=oid)}",
             token=token,
             params=params,
-            installation=True,
+            installation=installation,
         )
         try:
             payload = response.json()

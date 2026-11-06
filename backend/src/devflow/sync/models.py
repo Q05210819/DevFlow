@@ -64,6 +64,7 @@ class RepositorySync(Base):
     request_count: Mapped[int] = mapped_column(Integer, server_default="0")
     version_hint_sequence: Mapped[int] = mapped_column(BigInteger, server_default="0")
     next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_reconcile_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     health_generation: Mapped[int] = mapped_column(BigInteger, server_default="0")
     health_requested_sequence: Mapped[int] = mapped_column(

@@ -123,7 +123,7 @@ class SyncService:
                 else "targeted"
                 if targeted
                 else "reconcile"
-                if any(d.reason == "reconcile" for d in demands)
+                if any(d.reason in {"registration", "reconcile"} for d in demands)
                 else "initial"
                 if row is None or row.completed_watermark is None
                 else "incremental"
@@ -159,8 +159,9 @@ class SyncService:
                 db.add(row)
             else:
                 row.checkpoint = checkpoint.model_dump(mode="json")
-            row.status = "pending"
-            row.error_code = None
+            if mode != "targeted":
+                row.status = "pending"
+                row.error_code = None
         await db.flush()
 
     async def snapshot(self, lease) -> SyncWork:
@@ -184,9 +185,7 @@ class SyncService:
                     c
                     for stream in ("issues", "pulls", "actions")
                     for c in cursors
-                    if c.stream == stream
-                    and c.checkpoint["stage"] != "done"
-                    and c.status != "complete"
+                    if c.stream == stream and c.checkpoint["stage"] != "done"
                 ),
                 None,
             )
@@ -373,11 +372,19 @@ class SyncService:
                         db, collection, work.cursor.target_started_at
                     )
             cursor.checkpoint = checkpoint.model_dump(mode="json")
-            cursor.status = outcome if complete else "running"
-            cursor.error_code = reason if complete else None
-            if complete and outcome == "complete":
+            # The checkpoint records execution; these columns attest stream coverage.
+            # A target refresh cannot replace evidence from a full traversal.
+            if checkpoint.mode != "targeted":
+                cursor.status = outcome if complete else "running"
+                cursor.error_code = reason if complete else None
+            elif complete and reason and cursor.error_code is None:
+                # Newly observed target gaps may weaken coverage, never erase an
+                # existing unrelated gap or promote a successful target to full coverage.
+                cursor.status = outcome
+                cursor.error_code = reason
+            if complete and outcome == "complete" and checkpoint.mode != "targeted":
                 cursor.last_success_at = now
-                if checkpoint.window and checkpoint.mode != "targeted":
+                if checkpoint.window:
                     window = checkpoint.window
                     if cursor.covered_from is None or cursor.covered_until is None:
                         cursor.covered_from, cursor.covered_until = (
@@ -424,9 +431,6 @@ class SyncService:
                     )
                     state.active_job_id = None
                     state.status = "completed"
-                    state.next_due_at = now + timedelta(
-                        seconds=self.settings.sync_interval_seconds
-                    )
                     completed_cursors = list(
                         await db.scalars(
                             select(SyncCursor).where(
@@ -435,11 +439,26 @@ class SyncService:
                             )
                         )
                     )
-                    if all(c.status == "complete" for c in completed_cursors) and any(
-                        c.checkpoint["mode"] in {"initial", "reconcile"}
+                    if {c.stream for c in completed_cursors} == {
+                        "issues",
+                        "pulls",
+                        "actions",
+                    } and all(
+                        c.checkpoint["mode"] in {"initial", "incremental", "reconcile"}
                         for c in completed_cursors
                     ):
-                        state.last_reconciled_at = now
+                        state.next_due_at = now + timedelta(
+                            seconds=self.settings.sync_interval_seconds
+                        )
+                        if all(
+                            c.checkpoint["mode"] in {"initial", "reconcile"}
+                            for c in completed_cursors
+                        ):
+                            state.next_reconcile_at = now + timedelta(
+                                seconds=self.settings.sync_reconcile_seconds
+                            )
+                            if all(c.status == "complete" for c in completed_cursors):
+                                state.last_reconciled_at = now
                     await enqueue(db, state, installation, repository)
                     from devflow.health.service import request_health
 

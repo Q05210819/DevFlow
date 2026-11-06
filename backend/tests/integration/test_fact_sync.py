@@ -103,8 +103,46 @@ async def drive(env, remote, max_units=100):
         client = GitHubClient(http, env.settings)
         # Recreate tokens every unit: a restarted process must remain within 5 requests.
         for _ in range(max_units):
+            # This collector fixture drives new units immediately, independent
+            # of wall-clock rollback. Retry scheduling remains untouched.
+            async with env.factory.begin() as db:
+                state = await db.get(RepositorySync, env.repository.id)
+                if state and state.active_job_id:
+                    await db.execute(
+                        update(Job)
+                        .where(
+                            Job.id == state.active_job_id,
+                            Job.repository_id == env.repository.id,
+                            Job.kind == "repository.sync",
+                            Job.status == "queued",
+                            Job.attempt == 0,
+                            Job.lease_owner.is_(None),
+                            Job.lease_expires_at.is_(None),
+                        )
+                        .values(available_at=datetime(2000, 1, 1, tzinfo=UTC))
+                    )
             lease = await claim_fact_sync(env.queue, env.factory, env.repository.id)
             if lease is None:
+                async with env.factory() as db:
+                    state = await db.get(RepositorySync, env.repository.id)
+                    job = (
+                        await db.get(Job, state.active_job_id)
+                        if state.active_job_id
+                        else None
+                    )
+                    now = await db.scalar(select(func.clock_timestamp()))
+                    assert job is None, {
+                        "status": job.status,
+                        "available_at": job.available_at,
+                        "lease_expires_at": job.lease_expires_at,
+                        "database_time": now,
+                        "requests": job.request_count,
+                        "generation": state.generation,
+                        "captured_sequence": job.input.get("captured_sequence"),
+                        "requested_sequence": state.requested_sequence,
+                        "processed_sequence": state.processed_sequence,
+                    }
+                    assert state.status == "completed", state.status
                 return
             before = len(calls)
             await run_sync(
@@ -627,6 +665,83 @@ async def test_duplicate_pr_hint_shares_round_recapture_budget(sync_env):
 
     await drive(env, remote)
     assert details == 10
+
+
+@pytest.mark.asyncio
+async def test_recapture_ledger_capacity_reports_gap_without_dropping_entries(sync_env):
+    from dataclasses import replace
+
+    from devflow.github.data import DataResponse
+    from devflow.sync.pulls import collect_step
+    from devflow.sync.schemas import CapturedSHA, PendingCollection
+
+    env = sync_env
+    await request(env, SyncTarget(kind="pull", source_id=701, number=1))
+    lease = await env.queue.claim(uuid4())
+    work = await env.sync.snapshot(lease)
+    ledger = {str(source): 1 for source in range(1000, 2000)}
+    work = replace(
+        work,
+        cursor=work.cursor.model_copy(
+            update={
+                "target": SyncTarget(kind="pull", source_id=701, number=1),
+                "stage": "verify",
+                "issue_id": 501,
+                "captured_sha": CapturedSHA(base="a" * 40, head="b" * 40),
+                "recapture_counts": ledger,
+                "pending_collections": [PendingCollection(collection="files")],
+            }
+        ),
+    )
+
+    class Client:
+        async def read(self, *args, **kwargs):
+            return DataResponse(item=pull(head="c"))
+
+    result = await collect_step(work, Client(), None)
+    assert (
+        result.complete
+        and result.outcome == "partial"
+        and result.reason == "source_limit"
+    )
+    assert result.checkpoint.recapture_counts == ledger
+    assert result.collections[0].reason == "version_changed"
+
+
+@pytest.mark.asyncio
+async def test_open_to_closed_pr_revisit_keeps_recapture_budget(sync_env):
+    env = sync_env
+    await request(env)
+    details, phase = 0, "open"
+
+    def remote(req):
+        nonlocal details, phase
+        path = req.url.path
+        if path.endswith("/pulls"):
+            phase = req.url.params["state"]
+            return httpx.Response(
+                200,
+                json=[
+                    pull(state=phase, updated_at=(NOW - timedelta(days=1)).isoformat())
+                ],
+            )
+        if path.endswith("/pulls/1"):
+            details += 1
+            return httpx.Response(200, json=pull(head=f"{details:x}", state=phase))
+        if path.endswith("/issues/1"):
+            return httpx.Response(200, json=issue(pull_request={}))
+        if path.endswith("/actions/runs"):
+            return httpx.Response(200, json={"total_count": 0, "workflow_runs": []})
+        return httpx.Response(200, json=[])
+
+    await drive(env, remote)
+    assert details == 10  # Eight reads to exhaust three recaptures, two on revisit.
+    async with env.factory() as db:
+        value = await db.scalar(select(Fact).where(Fact.kind == "pull"))
+        assert value.payload["state"] == "closed"
+        cursor = await db.get(SyncCursor, (env.repository.id, "pulls"))
+        assert cursor.checkpoint["recapture_counts"] == {"701": 3}
+        assert cursor.status == "partial" and cursor.error_code == "version_changed"
 
 
 @pytest.mark.asyncio
