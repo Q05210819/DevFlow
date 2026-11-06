@@ -9,6 +9,7 @@ deliberately absent here: the model worker owns it in later tasks.
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -23,23 +24,27 @@ from devflow.chat.models import (
     Conversation,
     ConversationRepository,
     Message,
+    ToolCall,
 )
 from devflow.chat.schemas import (
     ConversationView,
     MessagePage,
     MessageView,
+    RunOutcome,
     RunReceipt,
 )
 from devflow.errors import AppError
 from devflow.github.client import not_found
 from devflow.jobs.models import Job
-from devflow.jobs.schemas import IdempotencyKey
+from devflow.jobs.queue import Queue
+from devflow.jobs.schemas import IdempotencyKey, JobErrorCode
 from devflow.jobs.service import append_event
 from devflow.knowledge.access import KnowledgeAccess
 from devflow.knowledge.schemas import QuerySelection
 from devflow.sync.scope import transaction
 
 _KEY = TypeAdapter(IdempotencyKey)
+_ERROR = TypeAdapter(JobErrorCode)
 _KIND = "chat.run"
 _GRAPH_VERSION = "chat-graph-v1"
 MAX_REPOSITORIES = 3
@@ -73,6 +78,24 @@ def _run_in_progress():
 
 def _archived():
     return AppError("conversation_archived", 409, "Conversation is archived")
+
+
+def _lease_expired():
+    return AppError("lease_expired", 409, "Run lease expired")
+
+
+def _answer_invalid():
+    return AppError("answer_validation_failed", 422, "Answer record is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class JobFence:
+    """The exact Job state a controller observed before it may retire a run."""
+
+    status: str
+    owner: UUID | None
+    generation: int
+    attempt: int
 
 
 class ChatService:
@@ -336,6 +359,167 @@ class ChatService:
         if message_id is None:
             raise not_found()
         return RunReceipt(run_id=run_id, job_id=replay.id, message_id=message_id)
+
+    async def finish(self, session, lease, run_id: UUID, outcome) -> AgentRun:
+        """Terminalize a run and its Job in the caller's transaction.
+
+        The assistant body never comes from the model output: it is read back
+        from the succeeded ``answer`` ToolCall of the same run. Retiring the
+        accepted config in the same statement that publishes the terminal state
+        is what makes the official checkpoint rows unreachable, even before the
+        cleanup sweep deletes them.
+        """
+
+        if not isinstance(run_id, UUID):
+            raise _invalid()
+        try:
+            outcome = RunOutcome.model_validate(outcome)
+        except ValidationError:
+            raise _invalid() from None
+        answered = outcome.status == "answered"
+        failed = outcome.status == "failed"
+        if answered != (outcome.answer_call_id is not None) or failed != (
+            outcome.error_code is not None
+        ):
+            raise _invalid()
+        error_code = outcome.error_code
+        if error_code is not None:
+            try:
+                error_code = _ERROR.validate_python(error_code)
+            except ValidationError:
+                raise _invalid() from None
+
+        job, now = await Queue(self.factory)._owned(session, lease)
+        if job is None:
+            raise _lease_expired()
+        run = await session.scalar(
+            select(AgentRun)
+            .where(AgentRun.id == run_id, AgentRun.job_id == lease.job_id)
+            .with_for_update()
+        )
+        if run is None or run.terminal_at is not None:
+            raise _lease_expired()
+
+        if answered:
+            call = await session.scalar(
+                select(ToolCall).where(
+                    ToolCall.id == outcome.answer_call_id,
+                    ToolCall.run_id == run.id,
+                    ToolCall.kind == "answer",
+                    ToolCall.status == "succeeded",
+                )
+            )
+            body, manifest = self._answer_body(call)
+            ordinal = await session.scalar(
+                select(func.coalesce(func.max(Message.ordinal) + 1, 0)).where(
+                    Message.conversation_id == run.conversation_id
+                )
+            )
+            session.add(
+                Message(
+                    id=uuid4(),
+                    conversation_id=run.conversation_id,
+                    run_id=run.id,
+                    ordinal=ordinal,
+                    role="assistant",
+                    body=body,
+                    body_bytes=len(body.encode("utf-8")),
+                    manifest=manifest,
+                    created_at=now,
+                )
+            )
+
+        run.status = (
+            "succeeded" if outcome.status in {"answered", "no_evidence"} else "failed"
+        )
+        run.terminal_reason = (
+            error_code
+            if failed
+            else "cancelled"
+            if outcome.status == "cancelled"
+            else outcome.status
+        )
+        run.terminal_at = now
+        run.accepted_retired_at = now
+        run.accepted_config = None
+        run.updated_at = now
+
+        job.status = "succeeded" if run.status == "succeeded" else "failed"
+        job.error_code = error_code if failed else None
+        job.result = None
+        job.lease_owner = None
+        job.lease_expires_at = None
+        job.updated_at = now
+        await Queue._transition(
+            session, job, "job.succeeded" if run.status == "succeeded" else "job.failed"
+        )
+        return run
+
+    @staticmethod
+    def _answer_body(call) -> tuple[str, dict | None]:
+        if call is None or not isinstance(call.result, dict):
+            raise _answer_invalid()
+        body = call.result.get("body")
+        manifest = call.result.get("manifest")
+        if not isinstance(body, str) or not 1 <= len(body.encode("utf-8")) <= 16384:
+            raise _answer_invalid()
+        if manifest is not None and not isinstance(manifest, dict):
+            raise _answer_invalid()
+        if (
+            manifest is not None
+            and len(
+                json.dumps(manifest, separators=(",", ":"), ensure_ascii=False).encode(
+                    "utf-8"
+                )
+            )
+            > 65536
+        ):
+            raise _answer_invalid()
+        return body, manifest
+
+    async def retire_controlled_run(
+        self, session, job_id: UUID, expected: JobFence, outcome: RunOutcome
+    ) -> AgentRun | None:
+        """Retire a run whose execution lease is already lost.
+
+        Cancellation and expired-lease recovery call this while they own the Job
+        transition. It never invents an answer or touches budgets, receipts or
+        evidence; an already terminal run is left exactly as it was.
+        """
+
+        try:
+            outcome = RunOutcome.model_validate(outcome)
+        except ValidationError:
+            raise _invalid() from None
+        if outcome.status == "answered" or outcome.answer_call_id is not None:
+            raise _invalid()
+        job = await session.scalar(
+            select(Job).where(Job.id == job_id).with_for_update()
+        )
+        now = await session.scalar(select(func.clock_timestamp()))
+        if job is None:
+            raise _lease_expired()
+        if (
+            job.status,
+            job.lease_owner,
+            job.lease_generation,
+            job.attempt,
+        ) != (expected.status, expected.owner, expected.generation, expected.attempt):
+            raise _lease_expired()
+        run = await session.scalar(
+            select(AgentRun).where(AgentRun.job_id == job_id).with_for_update()
+        )
+        if run is None:
+            raise _lease_expired()
+        if run.terminal_at is not None:
+            return run
+        run.status = "failed"
+        run.terminal_reason = outcome.error_code or "cancelled"
+        run.terminal_at = now
+        run.accepted_retired_at = now
+        run.accepted_config = None
+        run.updated_at = now
+        return run
 
     async def history(
         self,

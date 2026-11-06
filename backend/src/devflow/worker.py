@@ -109,6 +109,14 @@ async def run_worker(
                 await IndexRetention(factory, index=MilvusIndex(settings)).sweep(lease)
                 await KnowledgeRetention(factory).sweep(lease)
                 return None
+            if kind == "chat.cleanup":
+                from devflow.chat.handlers import ChatCleanupHandler
+                from devflow.chat.retention import ChatRetention
+
+                # The sweep owns the Job's terminal transition; a completed
+                # thread deletion is never acknowledged separately.
+                await ChatCleanupHandler(ChatRetention(factory)).run(lease)
+                return None
             if kind == "knowledge.import":
                 from devflow.knowledge.chunking import LocalChunker
                 from devflow.knowledge.handlers import KnowledgeImportHandler

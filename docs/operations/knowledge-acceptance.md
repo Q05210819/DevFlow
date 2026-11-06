@@ -171,3 +171,43 @@
 - 真实私有仓库、正式并发/容量/硬件测量、生产部署与正式验收。
 - 浏览器测试拦截 `/api/v1/...`，只证明 UI 契约，不证明真实前后端联调。
 - Git 提交/合并：3C 改动仍未提交，按既有 Git 审批限制保持工作区状态。
+
+## 3D 私有对话数据基础（Task 4：官方 saver fence 与 thread 清理，2026-11-06）
+
+本节记录 3D Task 4 的本地实现与验收证据：官方 LangGraph checkpoint saver 的同连接 fence、accepted config、容量核算与终态 thread 清理。未连接生产数据库、GitHub App、Milvus 或云模型；没有真实模型调用。
+
+### 环境与边界
+
+- Windows 11；后端 Python 3.12.13、UV 0.11.25；专用测试 PostgreSQL 17.11（`127.0.0.1:55439/devflow_test`）。唯一迁移 head 为 `0020_chat_retention`。
+- 实际锁定并运行的官方包：`langgraph 1.2.20`、`langgraph-checkpoint-postgres 3.2.0`、`langgraph-checkpoint 4.3.1`、`psycopg 3.3.6`。本文的 saver 行为描述来自该安装版本与真实隔离 PostgreSQL 测试，不是对上游源码的推断。
+- 官方 saver schema 只通过受控命令 `uv run --no-sync python -m devflow.chat.checkpoints --setup` 部署；测试与部署都使用 autocommit raw psycopg 连接。启动和请求路径不隐式建表；测试没有用 in-memory saver 替代官方包。
+
+### 执行命令与结果
+
+在 `backend/` 下执行（工作树 `D:/python/DevFlow/.worktrees/data-foundation`）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `APP_ENV=test PUBLIC_BASE_URL=http://127.0.0.1:8000 DATABASE_URL=postgresql+psycopg://devflow_test:devflow_test@127.0.0.1:55439/devflow_test uv run --no-sync python -m devflow.chat.checkpoints --setup` | EXIT 0；测试库 public schema 出现 `checkpoints`、`checkpoint_blobs`、`checkpoint_writes`、`checkpoint_migrations` 四张官方表 |
+| `uv run --no-sync pytest tests/integration/test_chat_checkpoints.py tests/integration/test_chat_retention.py -q` | 10 passed in 17.79s |
+| `uv run --no-sync pytest tests/integration/test_chat_budget.py tests/integration/test_chat_privacy.py tests/integration/test_job_submission.py tests/integration/test_job_transactions.py tests/integration/test_job_visibility.py tests/integration/test_migrations.py tests/integration/test_worker_denial_fencing.py tests/integration/test_worker_recovery.py -q` | 89 passed in 93.75s |
+| `uv run --no-sync ruff check src tests migrations` / `ruff format --check src tests migrations` | All checks passed / 243 files already formatted |
+| `uv run --no-sync alembic heads` | `0020_chat_retention (head)` |
+
+### 覆盖的行为
+
+- 原子性：`aput` 在官方 rows/blobs 写入后、accepted config 更新处注入失败时，整个显式事务回滚，官方三表计数保持 0 且 `accepted_config` 仍为 NULL；官方 saver 的 pipeline 与 savepoint 两条路径都不能提交外层事务。
+- 同连接 fence：一次 `aput`/`aget_tuple`/`aput_writes` 在一个独立 mutex 内完成；raw psycopg 事务先按 User → 全部 Installation → Repository → Job → AgentRun 顺序加锁并复核 owner/generation/attempt/status/租约到期；旧 owner、旧 generation、旧 attempt、已到期与来源撤权均被拒绝，且不产生官方行。
+- 锁等待时钟：在等待 Job 行锁期间把租约改为已到期，持有锁后的 DB 时钟复核仍拒绝写入，说明判断不依赖进程内时间。
+- 恢复边界：`aget_tuple` 只接受 DB accepted config 中的 checkpoint ID；省略 ID 时读取 accepted checkpoint；任意其他 ID 与任何非空 `checkpoint_ns`（attempt namespace）返回 `validation_error`。同 ID 后合法 pending writes 可见；旧 lease 写入被拒绝，新 generation 可以继续追加。
+- 容量：每次 checkpoint 序列化上限 64 KiB、每 run 最多 32 个 checkpoint、全局 128 MiB；写前检查与写后同事务按官方 rows/blobs/pending 实际逻辑字节核算，超限回滚为 `state_limit`。全局满时只驱逐更早的已终态且 accepted 已 retire/清空的 thread；活跃或未知状态不被删除。
+- 清理顺序：正常终态先在同一事务 retire 并清空 accepted，再由独立 `chat.cleanup` lease 复核后调用官方 `adelete_thread`；中断可重做，覆盖 checkpoints/blobs/writes。Message、manifest、receipt 与预算账本不在删除范围。writer 与 cleanup 竞争时，旧 writer 的 lease 由共享 advisory lock 与终态条件拒绝。
+- 数据库语义：`accepted_config` 使用 `JSONB(none_as_null=True)`，retire 后是 SQL NULL 而不是 JSON `'null'`，清理候选谓词因此可靠；新的 `0020_chat_retention` 迁移同时创建 `chat_checkpoint_accounts` 并登记 `chat.cleanup` Job kind。
+
+### 未执行项（NOT EXECUTED）
+
+- 真实云模型调用/真实 Agent graph 运行中的 checkpoint 写入；Task 4 只验证 saver 层与 Job/retention 集成，没有发出云请求。
+- 真实 24 小时终态等待与生产容量水位；测试用谓词/边界构造覆盖，不是墙钟 24 小时运行。
+- 生产部署、真实 GitHub App、生产数据库、真实 Milvus、正式备份恢复与正式验收。
+- 本次没有重跑完整的 1280 项后端测试集；上述聚焦与相关回归结果不能表述为整套后端或生产验收通过。
+- Git 提交/合并按既有审批限制执行。

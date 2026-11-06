@@ -38,6 +38,7 @@ ERROR_CODES = frozenset(
         "index_not_ready",
         "retrieval_unavailable",
         "context_limit",
+        "state_limit",
         "answer_validation_failed",
         "scope_mismatch",
         "run_in_progress",

@@ -152,7 +152,7 @@ class AgentRun(Base):
     queued_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    accepted_config: Mapped[dict | None] = mapped_column(JSONB)
+    accepted_config: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     accepted_retired_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
@@ -246,6 +246,37 @@ class ToolCall(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CheckpointAccount(Base):
+    """Exact per-run official-checkpoint usage, refreshed by every fenced write.
+
+    ``checkpoint_count`` and ``bytes`` are recomputed from the official tables in
+    the same transaction as the write. They are accounting evidence, never
+    access authority; the accepted config remains the only readable pointer.
+    """
+
+    __tablename__ = "chat_checkpoint_accounts"
+    __table_args__ = (
+        UniqueConstraint("thread_id", name="uq_chat_checkpoint_accounts_thread"),
+        CheckConstraint(
+            "checkpoint_count BETWEEN 0 AND 32",
+            name="ck_chat_checkpoint_accounts_count",
+        ),
+        CheckConstraint("bytes >= 0", name="ck_chat_checkpoint_accounts_bytes"),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("chat_agent_runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    thread_id: Mapped[UUID] = mapped_column()
+    checkpoint_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    bytes: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.clock_timestamp(),
+        onupdate=func.clock_timestamp(),
+    )
 
 
 class BudgetLedger(Base):

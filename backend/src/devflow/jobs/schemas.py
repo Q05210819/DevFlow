@@ -61,6 +61,7 @@ JobErrorCode = Literal[
     "index_not_ready",
     "retrieval_unavailable",
     "context_limit",
+    "state_limit",
     "answer_validation_failed",
     "model_not_configured",
     "model_call_outcome_unknown",
@@ -131,6 +132,19 @@ class KnowledgeCleanupResult(StrictDTO):
     chunks_reclaimed: int = Field(strict=True, ge=0)
     wrapped: bool = False
     cursor: UUID | None = None
+
+
+class ChatCleanupInput(StrictDTO):
+    """Finite terminal-thread sweep; candidates are always server-derived."""
+
+    version: Literal[1]
+    limit: int = Field(strict=True, ge=1, le=100)
+
+
+class ChatCleanupResult(StrictDTO):
+    examined: int = Field(strict=True, ge=0, le=100)
+    reclaimed: int = Field(strict=True, ge=0, le=100)
+    bytes_reclaimed: int = Field(strict=True, ge=0)
 
 
 class EventPayload(BaseModel):

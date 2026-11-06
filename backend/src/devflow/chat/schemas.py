@@ -64,6 +64,21 @@ class ProviderUsage(StrictDTO):
 CitationId = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{16,64}$")]
 
 
+class RunOutcome(StrictDTO):
+    """The only terminal outcomes a ChatAgent run may publish.
+
+    ``answer_call_id`` must name the succeeded ``answer`` ToolCall of the same
+    run; the assistant body is read back from that trusted record, never from
+    model output directly. ``error_code`` is only meaningful for ``failed``.
+    """
+
+    status: Literal["answered", "no_evidence", "failed", "cancelled"]
+    answer_call_id: UUID | None = None
+    error_code: (
+        Annotated[str, Field(strict=True, min_length=1, max_length=64)] | None
+    ) = None
+
+
 class AnswerDraft(StrictDTO):
     """The model's only accepted answer shape; citations are re-validated.
 

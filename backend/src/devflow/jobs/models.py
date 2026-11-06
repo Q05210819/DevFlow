@@ -28,11 +28,11 @@ class Job(Base):
             "requested_by", "kind", "idempotency_key", name="uq_jobs_creator_kind_key"
         ),
         CheckConstraint(
-            "kind IN ('repository.access_probe','repository.sync','repository.health','repository.workspace','knowledge.import','knowledge.cleanup','knowledge.index_batch','knowledge.query','chat.run')",
+            "kind IN ('repository.access_probe','repository.sync','repository.health','repository.workspace','knowledge.import','knowledge.cleanup','knowledge.index_batch','knowledge.query','chat.run','chat.cleanup')",
             name="valid_kind",
         ),
         CheckConstraint(
-            "(kind IN ('repository.access_probe','knowledge.import','knowledge.index_batch','knowledge.query','chat.run') AND requested_by IS NOT NULL) OR (kind IN ('repository.sync','repository.health','repository.workspace','knowledge.cleanup') AND requested_by IS NULL)",
+            "(kind IN ('repository.access_probe','knowledge.import','knowledge.index_batch','knowledge.query','chat.run') AND requested_by IS NOT NULL) OR (kind IN ('repository.sync','repository.health','repository.workspace','knowledge.cleanup','chat.cleanup') AND requested_by IS NULL)",
             name="valid_creator",
         ),
         CheckConstraint("request_count >= 0", name="request_count"),

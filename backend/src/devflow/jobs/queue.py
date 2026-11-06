@@ -37,6 +37,7 @@ _EXECUTABLE_KINDS = (
     "repository.workspace",
     "knowledge.import",
     "knowledge.cleanup",
+    "chat.cleanup",
 )
 
 
@@ -377,6 +378,7 @@ class Queue:
                     "repository.workspace",
                     "knowledge.import",
                     "knowledge.cleanup",
+                    "chat.cleanup",
                 }
                 or identity.kind in MODEL_JOB_KINDS
             ):
