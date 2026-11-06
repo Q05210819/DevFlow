@@ -74,6 +74,8 @@ ReasonCode = Literal[
     "index_failed",
     "model_not_configured",
     "model_call_outcome_unknown",
+    "answer_validation_failed",
+    "state_limit",
 ]
 
 

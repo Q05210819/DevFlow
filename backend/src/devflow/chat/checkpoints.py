@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID
 
 import psycopg
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.types.json import Jsonb
 
@@ -33,7 +34,6 @@ MAX_CHECKPOINT_BYTES = 64 * 1024
 MAX_CHECKPOINTS_PER_RUN = 32
 MAX_GLOBAL_BYTES = 128 * 1024 * 1024
 
-_CONFIG_KEYS = frozenset({"thread_id", "checkpoint_ns", "checkpoint_id"})
 _ADVISORY_SQL = (
     "SELECT pg_advisory_xact_lock(hashtextextended('devflow:chat:checkpoints', 0))"
 )
@@ -98,7 +98,7 @@ async def _store_accepted(cursor, run_id: UUID, accepted: dict) -> None:
         raise _lease_expired()
 
 
-class FencedPostgresSaver:
+class FencedPostgresSaver(BaseCheckpointSaver):
     """One run's official saver, fenced by lease, grant and accepted pointer."""
 
     def __init__(
@@ -110,6 +110,7 @@ class FencedPostgresSaver:
         *,
         settings: Settings | None = None,
     ) -> None:
+        super().__init__()
         if not isinstance(run_id, UUID):
             raise _invalid()
         if not connection.autocommit:
@@ -181,14 +182,27 @@ class FencedPostgresSaver:
 
     # ------------------------------------------------------------- configs
 
+    def get_next_version(self, current, channel=None):
+        """Expose the official version allocator as a plain attribute.
+
+        Pregel reads this off the checkpointer during loop construction and
+        calls it unchanged, so it must not be a coroutine.
+        """
+        return self._saver.get_next_version(current, channel)
+
     @staticmethod
     def _parse_config(config) -> tuple[str, str | None]:
         if not isinstance(config, dict):
             raise _invalid()
         configurable = config.get("configurable")
-        if not isinstance(configurable, dict) or set(configurable) - _CONFIG_KEYS:
+        # Pregel adds its own keys (runtime, durability, resuming, ...) to the
+        # configurable block it hands the checkpointer; only our three keys are
+        # authority-bearing and validated here. A top-level loop omits
+        # ``checkpoint_ns`` entirely, which the official saver also reads as the
+        # empty root namespace; any non-empty namespace is still rejected.
+        if not isinstance(configurable, dict):
             raise _invalid()
-        if "checkpoint_ns" not in configurable or configurable["checkpoint_ns"] != "":
+        if configurable.get("checkpoint_ns", "") != "":
             raise _invalid()
         thread = configurable.get("thread_id")
         if not isinstance(thread, str):

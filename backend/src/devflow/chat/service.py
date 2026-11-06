@@ -487,39 +487,7 @@ class ChatService:
         evidence; an already terminal run is left exactly as it was.
         """
 
-        try:
-            outcome = RunOutcome.model_validate(outcome)
-        except ValidationError:
-            raise _invalid() from None
-        if outcome.status == "answered" or outcome.answer_call_id is not None:
-            raise _invalid()
-        job = await session.scalar(
-            select(Job).where(Job.id == job_id).with_for_update()
-        )
-        now = await session.scalar(select(func.clock_timestamp()))
-        if job is None:
-            raise _lease_expired()
-        if (
-            job.status,
-            job.lease_owner,
-            job.lease_generation,
-            job.attempt,
-        ) != (expected.status, expected.owner, expected.generation, expected.attempt):
-            raise _lease_expired()
-        run = await session.scalar(
-            select(AgentRun).where(AgentRun.job_id == job_id).with_for_update()
-        )
-        if run is None:
-            raise _lease_expired()
-        if run.terminal_at is not None:
-            return run
-        run.status = "failed"
-        run.terminal_reason = outcome.error_code or "cancelled"
-        run.terminal_at = now
-        run.accepted_retired_at = now
-        run.accepted_config = None
-        run.updated_at = now
-        return run
+        return await retire_run(session, job_id, expected, outcome)
 
     async def history(
         self,
@@ -616,3 +584,46 @@ class ChatService:
                 value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
             ).encode("utf-8")
         ).hexdigest()
+
+
+async def retire_run(
+    session, job_id: UUID, expected: JobFence, outcome: RunOutcome
+) -> AgentRun | None:
+    """Retire one controlled run inside the caller's terminal transaction.
+
+    The expected fence must still match the locked Job row. The caller owns the
+    surrounding transaction, so any rejection here rolls back the Job
+    transition with it.
+    """
+
+    try:
+        outcome = RunOutcome.model_validate(outcome)
+    except ValidationError:
+        raise _invalid() from None
+    if outcome.status == "answered" or outcome.answer_call_id is not None:
+        raise _invalid()
+    job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+    now = await session.scalar(select(func.clock_timestamp()))
+    if job is None:
+        raise _lease_expired()
+    if (
+        job.status,
+        job.lease_owner,
+        job.lease_generation,
+        job.attempt,
+    ) != (expected.status, expected.owner, expected.generation, expected.attempt):
+        raise _lease_expired()
+    run = await session.scalar(
+        select(AgentRun).where(AgentRun.job_id == job_id).with_for_update()
+    )
+    if run is None:
+        raise _lease_expired()
+    if run.terminal_at is not None:
+        return run
+    run.status = "failed"
+    run.terminal_reason = outcome.error_code or "cancelled"
+    run.terminal_at = now
+    run.accepted_retired_at = now
+    run.accepted_config = None
+    run.updated_at = now
+    return run

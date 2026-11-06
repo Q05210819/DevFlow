@@ -328,6 +328,10 @@ class Queue:
             kind = await session.scalar(select(Job.kind).where(Job.id == lease.job_id))
         if kind == "repository.workspace":
             return 600
+        if kind == "chat.run":
+            # The first execution owns one fixed 180-second graph budget; the
+            # run's persisted deadline, not this per-attempt value, is authority.
+            return max(180, default)
         if kind in {"knowledge.import", "knowledge.index_batch"}:
             # One background batch must never occupy the model slot longer
             # than the fixed 120-second attempt budget.
@@ -468,6 +472,25 @@ class Queue:
             job, now = await self._owned(session, lease)
             if job is None:
                 return False
+            if job.kind == "chat.run" and not (
+                retryable and job.attempt < job.max_attempts
+            ):
+                # A run that has spent its final attempt must retire in the same
+                # transaction as the Job; a hook failure rolls both back.
+                from devflow.chat.schemas import RunOutcome
+                from devflow.chat.service import JobFence, retire_run
+
+                await retire_run(
+                    session,
+                    job.id,
+                    JobFence(
+                        status="running",
+                        owner=job.lease_owner,
+                        generation=job.lease_generation,
+                        attempt=job.attempt,
+                    ),
+                    RunOutcome(status="failed", error_code=code),
+                )
             await self._failure(session, job, now, code, retryable, retry_at)
             await self._sync_failure(
                 session, state, job, code, scope=rows if state is not None else None
@@ -534,6 +557,24 @@ class Queue:
                 if job is None or job.lease_expires_at > now:
                     continue
                 old = Lease(job.id, job.lease_owner, job.lease_generation, job.attempt)
+                if job.kind == "chat.run" and job.attempt >= job.max_attempts:
+                    # Retire before the generation bump: the CAS compares the
+                    # fence of the expired execution, and a still-retryable run
+                    # must keep its protected checkpoint.
+                    from devflow.chat.schemas import RunOutcome
+                    from devflow.chat.service import JobFence, retire_run
+
+                    await retire_run(
+                        session,
+                        job.id,
+                        JobFence(
+                            status="running",
+                            owner=job.lease_owner,
+                            generation=job.lease_generation,
+                            attempt=job.attempt,
+                        ),
+                        RunOutcome(status="failed", error_code="lease_expired"),
+                    )
                 job.lease_generation += 1
                 await self._failure(session, job, now, "lease_expired", True, None)
                 await self._sync_failure(

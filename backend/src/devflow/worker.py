@@ -187,6 +187,45 @@ async def run_worker(
                     )
                 ).run(lease)
                 return None
+            if kind == "chat.run":
+                from devflow.chat.budget import BudgetService
+                from devflow.chat.graph import ChatGraph
+                from devflow.chat.handlers import ChatRunHandler
+                from devflow.knowledge.citations import CitationService
+                from devflow.knowledge.milvus import MilvusIndex
+                from devflow.knowledge.retrieval import RetrievalService
+                from devflow.knowledge.sources import SourceReader
+
+                if model_runtime is None:
+                    raise AppError("service_unavailable", 503, "Model worker required")
+                index = MilvusIndex(settings)
+                retrieval = RetrievalService(
+                    factory,
+                    policy,
+                    inference=model_runtime.inference,
+                    index=index,
+                )
+                citations = CitationService(
+                    factory,
+                    policy,
+                    public_base_url=settings.public_base_url,
+                    reader=SourceReader(factory, policy),
+                )
+                # Cloud chat stays disabled until it is explicitly configured
+                # and authorized; the graph then terminates model_not_configured.
+                await ChatRunHandler(
+                    ChatGraph(
+                        factory,
+                        settings,
+                        retrieval=retrieval,
+                        citations=citations,
+                        budget=BudgetService(factory, settings),
+                        provider=None,
+                    ),
+                    factory,
+                    policy,
+                ).run(lease)
+                return None
             if kind in MODEL_JOB_KINDS:
                 from devflow.knowledge.handlers import MODEL_HANDLERS
 
