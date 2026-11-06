@@ -2,6 +2,8 @@
 
 import json
 import os
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
@@ -74,6 +76,28 @@ class Settings(BaseSettings):
     sync_history_days: int = Field(default=90, ge=1, le=365)
     sync_actions_days: int = Field(default=30, ge=1, le=365)
     sync_overlap_seconds: int = Field(default=300, ge=0, le=86400)
+
+    # No price, currency or provider identity is invented in source. Cloud chat
+    # stays disabled until a complete, explicit price sheet is configured.
+    chat_cloud_enabled: bool = False
+    chat_budget_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    chat_run_budget: Decimal | None = Field(
+        default=None, gt=0, max_digits=18, decimal_places=6
+    )
+    chat_month_budget: Decimal | None = Field(
+        default=None, gt=0, max_digits=18, decimal_places=6
+    )
+    chat_budget_minor_unit: Decimal | None = Field(
+        default=None, gt=0, le=1, max_digits=6, decimal_places=6
+    )
+    chat_pricing_version: str | None = Field(default=None, pattern=r"^[!-~]{1,64}$")
+    chat_pricing_valid_until: datetime | None = None
+    chat_input_price_per_million: Decimal | None = Field(
+        default=None, gt=0, max_digits=18, decimal_places=6
+    )
+    chat_output_price_per_million: Decimal | None = Field(
+        default=None, gt=0, max_digits=18, decimal_places=6
+    )
 
     workspace_git_executable: Path = Path(
         "C:/Program Files/Git/cmd/git.exe" if os.name == "nt" else "/usr/bin/git"
@@ -206,5 +230,32 @@ class Settings(BaseSettings):
                     "MODEL_DEVICE and MODEL_DTYPE must be set explicitly for a "
                     "model worker"
                 )
+
+        price_sheet = (
+            "chat_budget_currency",
+            "chat_run_budget",
+            "chat_month_budget",
+            "chat_budget_minor_unit",
+            "chat_pricing_version",
+            "chat_pricing_valid_until",
+            "chat_input_price_per_million",
+            "chat_output_price_per_million",
+        )
+        if self.chat_cloud_enabled:
+            if any(getattr(self, name) is None for name in price_sheet):
+                raise ValueError(
+                    "Cloud chat requires a complete currency and price sheet"
+                )
+            valid_until = self.chat_pricing_valid_until
+            if (
+                valid_until is None
+                or valid_until.tzinfo is None
+                or valid_until.utcoffset() is None
+            ):
+                raise ValueError("CHAT_PRICING_VALID_UNTIL must be timezone-aware")
+        elif any(getattr(self, name) is not None for name in price_sheet):
+            # A price sheet without the cloud mode is a mode mismatch, not a
+            # harmless leftover: it can hide an intended-but-unauthorized call.
+            raise ValueError("A chat price sheet requires CHAT_CLOUD_ENABLED=true")
 
         return self

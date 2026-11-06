@@ -61,11 +61,11 @@ Conversation创建是同步短元数据事务，返回ConversationView：仍要�
 
 **Interfaces:** `BudgetService.reserve(lease:Lease,run_id:UUID,call_key:str,request_hash:str,parameter_version:str)->Reservation`；`mark_dispatched(lease,receipt_id:UUID)->None`；`settle(lease,receipt_id,usage:ProviderUsage)->None`；`mark_unknown(lease,receipt_id)->None`。`Reservation(receipt_id:UUID,amount:Decimal,currency:str,pricing_version:str,input_cap:int,output_cap:int)`；`ProviderUsage(prompt_tokens:int,completion_tokens:int,request_id:str,complete:bool)`，reasoning为包含关系，不重复加总。回放先查receipt状态，不能再次reserve/dispatch同逻辑call。
 
-- [ ] **RED:** `test_reserve_full_caps_atomically` 断言 `input_cap==1_000_000`、`output_cap==1034`、向上取最小货币单位，两并发不能超run/月余额；配置缺失/零/负/过期/不匹配币种或模式拒绝。`test_unknown_keeps_reservation_after_cancel_delete_replay`：dispatched后崩溃、缺usage、timeout不能释放/再发；dispatched前先落库的崩溃也保守unknown。`test_usage_does_not_double_count_reasoning`；`test_month_boundary_does_not_move_old_reservation` UTC跨月按原桶结算；超配置上界停后续请求并记对账异常。记录4KiB/全局32MiB边界、90天只清已结算终态、未知不清。
-- [ ] **Run RED:** `uv run --no-sync pytest tests/integration/test_chat_budget.py -q`。
-- [ ] **Implement:** Decimal金额、独立run/月桶累计，固定全局预算准入锁先于3A授权/Job/run/ledger顺序；所有状态跃迁CAS幂等，检查完整Lease/DB clock并复核。单请求reserve输入完整上下文+输出偏差，只有可信usage释放确认未用额；免费/缓存折扣不作为准入保证。记录请求hash/价格参数版本/状态/金额，不保存prompt。HTTP在事务外，标dispatched成功之后才可发；发送未知且旧lease失效不能污染run，下一合法恢复识别dispatched无可信结果为unknown，不自动重发。真实云仍默认关闭。
-- [ ] **GREEN:** 聚焦测试 +现有Job事务/lease回归PASS；Ruff。这里只用确定性假计价/usage证明账本，不宣称供应商账单绝对上限或真实计费已验证。
-- [ ] **Commit:** `feat: reserve and reconcile durable chat call budgets`。
+- [x] **RED:** `test_reserve_full_caps_atomically` 断言 `input_cap==1_000_000`、`output_cap==1034`、向上取最小货币单位，两并发不能超run/月余额；配置缺失/零/负/过期/不匹配币种或模式拒绝。`test_unknown_keeps_reservation_after_cancel_delete_replay`：dispatched后崩溃、缺usage、timeout不能释放/再发；dispatched前先落库的崩溃也保守unknown。`test_usage_does_not_double_count_reasoning`；`test_month_boundary_does_not_move_old_reservation` UTC跨月按原桶结算；超配置上界停后续请求并记对账异常。记录4KiB/全局32MiB边界、90天只清已结算终态、未知不清。
+- [x] **Run RED:** `uv run --no-sync pytest tests/integration/test_chat_budget.py -q`。
+- [x] **Implement:** Decimal金额、独立run/月桶累计，固定全局预算准入锁先于3A授权/Job/run/ledger顺序；所有状态跃迁CAS幂等，检查完整Lease/DB clock并复核。单请求reserve输入完整上下文+输出偏差，只有可信usage释放确认未用额；免费/缓存折扣不作为准入保证。记录请求hash/价格参数版本/状态/金额，不保存prompt。HTTP在事务外，标dispatched成功之后才可发；发送未知且旧lease失效不能污染run，下一合法恢复识别dispatched无可信结果为unknown，不自动重发。真实云仍默认关闭。
+- [x] **GREEN:** 聚焦测试 +现有Job事务/lease回归PASS；Ruff。这里只用确定性假计价/usage证明账本，不宣称供应商账单绝对上限或真实计费已验证。
+- [x] **Commit:** `feat: reserve and reconcile durable chat call budgets`。
 
 ### Task 3: 完整请求体装配与固定云协议适配
 

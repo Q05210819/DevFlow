@@ -61,6 +61,8 @@ JobErrorCode = Literal[
     "index_not_ready",
     "retrieval_unavailable",
     "answer_validation_failed",
+    "model_not_configured",
+    "model_call_outcome_unknown",
 ]
 IdempotencyKey = Annotated[str, Field(strict=True, pattern=r"^[!-~]{1,128}$")]
 

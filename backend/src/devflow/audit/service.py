@@ -32,6 +32,7 @@ AuditAction = Literal[
     "backfill.requested",
     "health.requested",
     "workspace.requested",
+    "chat.budget.reconciliation",
 ]
 ReasonCode = Literal[
     "unauthenticated",
@@ -71,6 +72,8 @@ ReasonCode = Literal[
     "service_unavailable",
     "build_deadline_exceeded",
     "index_failed",
+    "model_not_configured",
+    "model_call_outcome_unknown",
 ]
 
 
@@ -90,6 +93,7 @@ class AuditEntry(BaseModel):
         "job",
         "credential",
         "workspace",
+        "chat_run",
     ]
     resource_id: UUID | None = None
     outcome: Literal["success", "failure"]

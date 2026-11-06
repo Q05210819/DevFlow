@@ -322,11 +322,29 @@ class RequestReceipt(Base):
             "usage IS NULL OR octet_length(usage::text) <= 4096",
             name="ck_chat_request_receipts_usage",
         ),
+        # Application rows carry one complete price/lease snapshot. Rows from
+        # before this ledger existed stay all-NULL and are never reconcilable.
+        CheckConstraint(
+            "(lease_owner IS NULL AND lease_generation IS NULL "
+            "AND lease_attempt IS NULL AND month_start IS NULL "
+            "AND minor_unit IS NULL AND input_price_per_million IS NULL "
+            "AND output_price_per_million IS NULL) OR "
+            "(lease_owner IS NOT NULL AND lease_generation IS NOT NULL "
+            "AND lease_attempt IS NOT NULL AND month_start IS NOT NULL "
+            "AND minor_unit IS NOT NULL AND input_price_per_million IS NOT NULL "
+            "AND output_price_per_million IS NOT NULL "
+            "AND lease_generation >= 0 AND lease_attempt >= 0 "
+            "AND minor_unit > 0 AND input_price_per_million > 0 "
+            "AND output_price_per_million > 0)",
+            name="ck_chat_request_receipts_fence",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    # Fee identity must outlive a deleted run: content deletion never releases
+    # an unknown reservation or erases the evidence of a possible charge.
     run_id: Mapped[UUID] = mapped_column(
-        ForeignKey("chat_agent_runs.id", ondelete="CASCADE")
+        ForeignKey("chat_agent_runs.id", ondelete="RESTRICT")
     )
     kind: Mapped[str] = mapped_column(String(16), server_default="model")
     ordinal: Mapped[int] = mapped_column(Integer)
@@ -338,6 +356,13 @@ class RequestReceipt(Base):
     amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
     currency: Mapped[str | None] = mapped_column(String(3))
     pricing_version: Mapped[str | None] = mapped_column(String(64))
+    lease_owner: Mapped[UUID | None] = mapped_column()
+    lease_generation: Mapped[int | None] = mapped_column(Integer)
+    lease_attempt: Mapped[int | None] = mapped_column(Integer)
+    month_start: Mapped[date | None] = mapped_column(Date)
+    minor_unit: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
+    input_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
+    output_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(24, 6))
     provider_request_id: Mapped[str | None] = mapped_column(String(128))
     usage: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(

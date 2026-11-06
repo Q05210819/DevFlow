@@ -41,6 +41,8 @@ ERROR_CODES = frozenset(
         "scope_mismatch",
         "run_in_progress",
         "conversation_archived",
+        "model_not_configured",
+        "model_call_outcome_unknown",
     }
 )
 RETRYABLE_ERROR_CODES = frozenset(
