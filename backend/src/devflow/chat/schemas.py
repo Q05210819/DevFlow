@@ -59,3 +59,26 @@ class ProviderUsage(StrictDTO):
     completion_tokens: Count
     request_id: Annotated[str, Field(strict=True, min_length=1, max_length=128)]
     complete: Annotated[bool, Field(strict=True)]
+
+
+CitationId = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{16,64}$")]
+
+
+class AnswerDraft(StrictDTO):
+    """The model's only accepted answer shape; citations are re-validated.
+
+    ``citation_ids`` may only name evidence in the exact request that produced
+    this answer. The body limit is enforced on the raw content bytes before
+    parsing, so this model never sees an oversized response.
+    """
+
+    conclusion: Annotated[str, Field(strict=True, min_length=1, max_length=16384)]
+    citation_ids: Annotated[tuple[CitationId, ...], Field(max_length=6)] = ()
+    insufficient_evidence: Annotated[bool, Field(strict=True)]
+    next_steps: Annotated[
+        tuple[
+            Annotated[str, Field(strict=True, max_length=1024)],
+            ...,
+        ],
+        Field(max_length=8),
+    ] = ()

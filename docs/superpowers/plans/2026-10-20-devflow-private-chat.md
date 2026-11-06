@@ -73,11 +73,11 @@ Conversation创建是同步短元数据事务，返回ConversationView：仍要�
 
 **Interfaces:** `ContextAssembler.assemble(question:str,current:EvidenceSet,*,previous:EvidenceSet|None=None,tool_exchange:ToolExchange|None=None)->PreparedCall`；`PreparedCall(messages:list,tools:list,manifest:EvidenceManifest,body:bytes,request_hash:str,parameter_version:str)`；`ChatProvider.prepare(...)`负责生成最终发送body；`ChatProvider.invoke(prepared:PreparedCall,*,deadline:datetime)->ProviderReply`。`ProviderReply(answer:AnswerDraft|None,tool_query:str|None,usage:ProviderUsage|None,request_id:str|None)`；`AnswerDraft(conclusion:str,citation_ids:list[str],insufficient_evidence:bool,next_steps:list[str])`；ToolExchange仅当前run上一模型tool_call ID/arguments与匹配结果，不含历史会话。
 
-- [ ] **RED:** `test_limit_counts_actual_json_body_including_tools_and_escaping` 多字节、引号/反斜杠、工具schema、系统提示共同计入`len(body)<=24576`，捕获真实HTTP transport收到的body并与预检hash一致；必须部分超限或无完整证据可装入时context_limit、调用次数0。`test_second_context_prefers_new_and_drops_old_citations` 新rank优先→补旧未重复，≤6/每文件≤2，必须tool协议保留，最终manifest不含被剔除ID。`test_cloud_body_has_no_old_history_logs_or_unselected_source`；`test_provider_fixed_chat_contract` 路由chat/completions、模型/base URL、enable_thinking=false、max_completion_tokens=1024、SDK retry0、无tracing/search/cache-create，Responses不被自动选择；畸形/超16KiB/未知引用输出拒绝，不自动修补请求。
-- [ ] **Run RED:** `uv run --no-sync pytest tests/test_chat_context.py tests/test_chat_provider.py -q`。
-- [ ] **Implement:** 使用LangChain消息/标准function calling，唯一工具 `search_repository_evidence(query)`，schema不带repo/权限参数。先固定must-have协议，再按完整块贪心尝试装入，稳定证据身份ID由3C产生；不截断片段却复用原引用。最终HTTP序列化只有一个权威出口：若LangChain/SDK会重序列化，使用其httpx transport发送前边界校验实际bytes并拒绝超限，且预算绑定的hash来自同一body；不可只数messages再声称请求合规。实现时锁定LangGraph、checkpoint-postgres、LangChain/OpenAI适配兼容版本，不安装未使用Agent包。输出解析与usage校验分开：答案无效也可能已计费，照常结算可信usage。
-- [ ] **GREEN:** 上述测试以无网络mock transport捕获最终请求PASS；`uv lock --check`、Ruff。实际供应商接受参数/usage/task-call兼容性留Task6单列未执行门槛，mock绝不解锁真实云开关。
-- [ ] **Commit:** `feat: assemble bounded evidence-only chat requests`。
+- [x] **RED:** `test_limit_counts_actual_json_body_including_tools_and_escaping` 多字节、引号/反斜杠、工具schema、系统提示共同计入`len(body)<=24576`，捕获真实HTTP transport收到的body并与预检hash一致；必须部分超限或无完整证据可装入时context_limit、调用次数0。`test_second_context_prefers_new_and_drops_old_citations` 新rank优先→补旧未重复，≤6/每文件≤2，必须tool协议保留，最终manifest不含被剔除ID。`test_cloud_body_has_no_old_history_logs_or_unselected_source`；`test_provider_fixed_chat_contract` 路由chat/completions、模型/base URL、enable_thinking=false、max_completion_tokens=1024、SDK retry0、无tracing/search/cache-create，Responses不被自动选择；畸形/超16KiB/未知引用输出拒绝，不自动修补请求。
+- [x] **Run RED:** `uv run --no-sync pytest tests/test_chat_context.py tests/test_chat_provider.py -q`。
+- [x] **Implement:** 使用LangChain消息/标准function calling，唯一工具 `search_repository_evidence(query)`，schema不带repo/权限参数。先固定must-have协议，再按完整块贪心尝试装入，稳定证据身份ID由3C产生；不截断片段却复用原引用。最终HTTP序列化只有一个权威出口：若LangChain/SDK会重序列化，使用其httpx transport发送前边界校验实际bytes并拒绝超限，且预算绑定的hash来自同一body；不可只数messages再声称请求合规。实现时锁定LangGraph、checkpoint-postgres、LangChain/OpenAI适配兼容版本，不安装未使用Agent包。输出解析与usage校验分开：答案无效也可能已计费，照常结算可信usage。
+- [x] **GREEN:** 上述测试以无网络mock transport捕获最终请求PASS；`uv lock --check`、Ruff。实际供应商接受参数/usage/task-call兼容性留Task6单列未执行门槛，mock绝不解锁真实云开关。
+- [x] **Commit:** `feat: assemble bounded evidence-only chat requests`。
 
 ### Task 4: 官方saver的同连接fence与完整thread保留
 
