@@ -38,6 +38,9 @@ ERROR_CODES = frozenset(
         "index_not_ready",
         "retrieval_unavailable",
         "answer_validation_failed",
+        "scope_mismatch",
+        "run_in_progress",
+        "conversation_archived",
     }
 )
 RETRYABLE_ERROR_CODES = frozenset(

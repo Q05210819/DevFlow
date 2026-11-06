@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from devflow.audit.service import AuditEntry, write_audit
 from devflow.auth.types import Actor
+from devflow.chat.models import AgentRun
 from devflow.errors import AppError
 from devflow.github.client import not_found
 from devflow.github.models import GitHubInstallation
@@ -23,7 +24,8 @@ from devflow.repositories.policy import RepositoryPolicy, check_actor
 _KEY = TypeAdapter(IdempotencyKey)
 _KIND = "repository.access_probe"
 _QUERY_KIND = "knowledge.query"
-_VISIBLE_KINDS = frozenset({_KIND, _QUERY_KIND})
+_CHAT_KIND = "chat.run"
+_VISIBLE_KINDS = frozenset({_KIND, _QUERY_KIND, _CHAT_KIND})
 
 
 async def append_event(
@@ -184,10 +186,11 @@ class JobService:
             raise
 
     async def _visible_scope(self, actor: Actor, job_id: UUID):
-        """Load the creator-scoped repository set, never the result.
+        """Load the creator-scoped source set, never the result.
 
         A query Job belongs to every repository its frozen selection included,
-        not only the anchor kept on Job.repository_id.
+        not only the anchor kept on Job.repository_id. A chat Job belongs to
+        the conversation's immutable source set through its AgentRun.
         """
         async with self.factory() as session:
             row = (
@@ -202,8 +205,15 @@ class JobService:
             if row is None:
                 return None
             kind, anchor = row
+            if kind == _CHAT_KIND:
+                conversation_id = await session.scalar(
+                    select(AgentRun.conversation_id).where(AgentRun.job_id == job_id)
+                )
+                return (
+                    None if conversation_id is None else (_CHAT_KIND, conversation_id)
+                )
             if kind != _QUERY_KIND:
-                return (anchor,)
+                return (_KIND, (anchor,))
             repositories = tuple(
                 await session.scalars(
                     select(KnowledgeQueryRepository.repository_id)
@@ -215,7 +225,7 @@ class JobService:
                     .order_by(KnowledgeQueryRepository.ordinal)
                 )
             )
-        return repositories or (anchor,)
+        return (_QUERY_KIND, repositories or (anchor,))
 
     async def _authorize_all(self, actor: Actor, repository_ids, *, fresh: bool):
         return tuple(
@@ -269,24 +279,35 @@ class JobService:
 
     async def visibility(self, actor: Actor, job_id: UUID):
         """Return the visible Job plus every authorization snapshot it needs."""
-        repository_ids = await self._visible_scope(actor, job_id)
-        if repository_ids is None:
-            async with self.factory.begin() as session:
-                await check_actor(session, actor)
-                await write_audit(
-                    session,
-                    AuditEntry(
-                        actor_id=actor.id,
-                        action="permission.denied",
-                        resource_type="job",
-                        resource_id=job_id,
-                        outcome="failure",
-                        reason_code="resource_not_found",
-                    ),
-                )
+        scope = await self._visible_scope(actor, job_id)
+        if scope is None:
+            await self._audit_hidden(actor, job_id)
             raise not_found()
+        kind, value = scope
         try:
-            snapshots = await self._authorize_all(actor, repository_ids, fresh=False)
+            if kind == _CHAT_KIND:
+                # Imported lazily: chat submission depends on this module.
+                from devflow.chat.service import ChatService
+
+                grant = await ChatService(self.factory, self.policy).authorize(
+                    actor, value, fresh=False
+                )
+                snapshots = tuple(
+                    (
+                        actor.id,
+                        epoch.repository_id,
+                        epoch.user_version,
+                        epoch.installation_version,
+                        epoch.repository_version,
+                        epoch.installation_id,
+                    )
+                    for epoch in sorted(
+                        grant.repository_epochs,
+                        key=lambda item: str(item.repository_id),
+                    )
+                )
+            else:
+                snapshots = await self._authorize_all(actor, value, fresh=False)
             async with self.factory.begin() as session:
                 await self._lock_authorizations(session, actor, snapshots)
                 job = await session.scalar(
@@ -300,8 +321,27 @@ class JobService:
                     raise not_found()
                 return JobView.model_validate(job), snapshots
         except AppError as error:
-            await self.policy.audit_denial(actor, error, repository_ids[0])
+            if kind == _CHAT_KIND:
+                # The conversation and its source set are both private.
+                await self._audit_hidden(actor, job_id)
+            else:
+                await self.policy.audit_denial(actor, error, value[0])
             raise
+
+    async def _audit_hidden(self, actor: Actor, job_id: UUID):
+        async with self.factory.begin() as session:
+            await check_actor(session, actor)
+            await write_audit(
+                session,
+                AuditEntry(
+                    actor_id=actor.id,
+                    action="permission.denied",
+                    resource_type="job",
+                    resource_id=job_id,
+                    outcome="failure",
+                    reason_code="resource_not_found",
+                ),
+            )
 
     async def get_visible(self, actor: Actor, job_id: UUID) -> JobView:
         view, _ = await self.visibility(actor, job_id)

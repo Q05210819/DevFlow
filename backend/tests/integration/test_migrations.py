@@ -536,6 +536,48 @@ def test_cleanup_kind_migration_preserves_jobs(empty_database):
         engine.dispose()
 
 
+def test_private_chat_downgrade_refuses_user_content(empty_database):
+    from uuid import uuid4
+
+    from sqlalchemy import create_engine
+
+    settings, config = empty_database
+    command.upgrade(config, "head")
+    user, conversation = uuid4(), uuid4()
+    engine = create_engine(settings.database_url.get_secret_value())
+    try:
+        with engine.begin() as db:
+            db.execute(
+                text("INSERT INTO users (id,github_id,role) VALUES (:id,42,'admin')"),
+                {"id": user},
+            )
+            db.execute(
+                text(
+                    "INSERT INTO chat_conversations (id,actor_id,idempotency_key,input_hash) VALUES (:id,:user,'key',:hash)"
+                ),
+                {"id": conversation, "user": user, "hash": "a" * 64},
+            )
+        with pytest.raises(RuntimeError, match="Cannot discard private conversations"):
+            command.downgrade(config, "0017_knowledge_queries")
+        with engine.connect() as db:
+            assert db.scalar(text("SELECT count(*) FROM chat_conversations")) == 1
+            assert (
+                db.scalar(text("SELECT version_num FROM alembic_version"))
+                == ScriptDirectory.from_config(config).get_current_head()
+            )
+        with engine.begin() as db:
+            db.execute(
+                text("DELETE FROM chat_conversations WHERE id=:id"),
+                {"id": conversation},
+            )
+        command.downgrade(config, "0017_knowledge_queries")
+        with engine.connect() as db:
+            assert db.scalar(text("SELECT to_regclass('chat_conversations')")) is None
+        command.upgrade(config, "head")
+    finally:
+        engine.dispose()
+
+
 def test_stage_downgrade_refuses_keyed_replay_loss(empty_database):
     from uuid import uuid4
 

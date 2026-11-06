@@ -49,11 +49,11 @@
 
 Conversation创建是同步短元数据事务，返回ConversationView：仍要求CSRF、幂等、当前用户/来源授权和容量检查，不执行模型/Git/导入/索引。只有耗时内容操作提交Job，不新增 `chat.conversation_create`。
 
-- [ ] **RED:** `test_conversation_is_private_and_scope_immutable` 猜ID/另一用户/admin旁观拒绝；更换selected集合冲突而非悄改会话；仅source-only fork的选择也被保留。`test_one_active_run_and_durable_counts` 并发提交至多1活动run、幂等key复用/冲突、200消息/100会话边界且归档不绕过。`test_all_participating_scopes_protect_history_job_and_sse` 撤任一repo，历史/引用入口/Job及回放均拒绝。
-- [ ] **Run RED:** `uv run --no-sync pytest tests/integration/test_chat_privacy.py -q`。
-- [ ] **Implement:** 表Conversation、Message、AgentRun、ToolCall、BudgetLedger/RequestReceipt及成员关系；逻辑请求键(run_id,kind,ordinal)唯一。AgentRun包含稳定thread UUID、graph版本、冻结scope、累计nodes/retrieval/model requests、首次执行时间/deadline、queued deadline、accepted config/retired、terminal reason；预算不借用Job每attempt重置的request_count。Message问题与答案独立有界；多仓权限检查复用3C，不用Job.anchor代替全部来源。创建Job与run/message/事件同事务，不在审计存正文。所有私有job visibility有限kind分支共用ChatService.authorize，不另造SSE。
-- [ ] **GREEN:** 聚焦测试、`uv run --no-sync pytest tests/integration/test_job_visibility.py tests/integration/test_sse.py tests/integration/test_migrations.py -q`；Ruff实际改动；迁移保留先前数据，含内容数据的downgrade拒绝静默删除。
-- [ ] **Commit:** `feat: persist private conversations and durable agent runs`。
+- [x] **RED:** `test_conversation_is_private_and_scope_immutable` 猜ID/另一用户/admin旁观拒绝；更换selected集合冲突而非悄改会话；仅source-only fork的选择也被保留。`test_one_active_run_and_durable_counts` 并发提交至多1活动run、幂等key复用/冲突、200消息/100会话边界且归档不绕过。`test_all_participating_scopes_protect_history_job_and_sse` 撤任一repo，历史/引用入口/Job及回放均拒绝。
+- [x] **Run RED:** `uv run --no-sync pytest tests/integration/test_chat_privacy.py -q`。
+- [x] **Implement:** 表Conversation、Message、AgentRun、ToolCall、BudgetLedger/RequestReceipt及成员关系；逻辑请求键(run_id,kind,ordinal)唯一。AgentRun包含稳定thread UUID、graph版本、冻结scope、累计nodes/retrieval/model requests、首次执行时间/deadline、queued deadline、accepted config/retired、terminal reason；预算不借用Job每attempt重置的request_count。Message问题与答案独立有界；多仓权限检查复用3C，不用Job.anchor代替全部来源。创建Job与run/message/事件同事务，不在审计存正文。所有私有job visibility有限kind分支共用ChatService.authorize，不另造SSE。
+- [x] **GREEN:** 聚焦测试、`uv run --no-sync pytest tests/integration/test_job_visibility.py tests/integration/test_sse.py tests/integration/test_migrations.py -q`；Ruff实际改动；迁移保留先前数据，含内容数据的downgrade拒绝静默删除。
+- [x] **Commit:** `feat: persist private conversations and durable agent runs`。
 
 ### Task 2: 请求预占、dispatch与未知结果账本
 

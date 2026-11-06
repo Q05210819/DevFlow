@@ -97,6 +97,15 @@ class KnowledgeIndexInput(StrictDTO):
     index_id: UUID
 
 
+class ChatRunInput(StrictDTO):
+    """Business references only; the question never enters the Job row."""
+
+    version: Literal[1]
+    run_id: UUID
+    conversation_id: UUID
+    message_id: UUID
+
+
 class KnowledgeImportResult(StrictDTO):
     import_id: UUID
     target_generation: int = Field(strict=True, ge=1)
