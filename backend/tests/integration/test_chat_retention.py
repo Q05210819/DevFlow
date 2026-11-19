@@ -39,6 +39,7 @@ from devflow.chat.models import (
     AgentRun,
     BudgetLedger,
     CheckpointAccount,
+    Conversation,
     Message,
     RequestReceipt,
     ToolCall,
@@ -431,3 +432,145 @@ async def test_stale_writer_loses_the_cleanup_race(checkpoint_env):
     assert await account_row(env, current.run_id) is not None
     job = await cleanup_job(env)
     assert job is not None and job.status == "succeeded"
+
+
+async def test_content_retention_preserves_unknown_receipts(checkpoint_env):
+    """Expired bodies and settled fees go; unknown charges and live runs stay."""
+
+    env = checkpoint_env
+    run = await active_run(env, "content")
+    live = await active_run(env, "content-live")
+    answer_id = await answer_call(env, run.run_id, "kept answer")
+    await finish_run(
+        env,
+        run.lease,
+        run.run_id,
+        RunOutcome(status="answered", answer_call_id=answer_id),
+    )
+
+    old = datetime.now(UTC) - timedelta(days=91)
+    future = datetime.now(UTC) + timedelta(days=1)
+    async with env.factory.begin() as db:
+        conversation = Conversation(
+            actor_id=env.actor.id,
+            idempotency_key=uuid4().hex,
+            input_hash="a" * 64,
+        )
+        db.add(conversation)
+        await db.flush()
+        stale_message = Message(
+            conversation_id=conversation.id,
+            ordinal=0,
+            role="user",
+            body="expired question",
+            body_bytes=len(b"expired question"),
+            created_at=old,
+        )
+        recent_message = Message(
+            conversation_id=conversation.id,
+            ordinal=1,
+            role="user",
+            body="recent question",
+            body_bytes=len(b"recent question"),
+        )
+        expired_call = ToolCall(
+            run_id=run.run_id,
+            ordinal=2,
+            kind="retrieval",
+            arguments={"version": 1},
+            status="succeeded",
+            completed_at=old,
+            expires_at=old,
+        )
+        fresh_call = ToolCall(
+            run_id=run.run_id,
+            ordinal=3,
+            kind="retrieval",
+            arguments={"version": 1},
+            status="succeeded",
+            completed_at=old,
+            expires_at=future,
+        )
+        live_call = ToolCall(
+            run_id=live.run_id,
+            ordinal=0,
+            kind="retrieval",
+            arguments={"version": 1},
+            status="succeeded",
+            completed_at=old,
+            expires_at=old,
+        )
+        settled = RequestReceipt(
+            run_id=run.run_id,
+            kind="model",
+            ordinal=0,
+            request_hash="b" * 64,
+            parameter_version="params-v1",
+            status="settled",
+            input_cap=1000,
+            output_cap=100,
+            amount=Decimal("0.100000"),
+            currency="USD",
+            pricing_version="test-pricing-v1",
+            settled_at=old,
+        )
+        unknown = RequestReceipt(
+            run_id=run.run_id,
+            kind="model",
+            ordinal=1,
+            request_hash="c" * 64,
+            parameter_version="params-v1",
+            status="unknown",
+            input_cap=1000,
+            output_cap=100,
+            amount=Decimal("0.100000"),
+            currency="USD",
+            pricing_version="test-pricing-v1",
+        )
+        reserved = RequestReceipt(
+            run_id=run.run_id,
+            kind="model",
+            ordinal=2,
+            request_hash="d" * 64,
+            parameter_version="params-v1",
+            status="reserved",
+            input_cap=1000,
+            output_cap=100,
+        )
+        db.add_all(
+            [
+                stale_message,
+                recent_message,
+                expired_call,
+                fresh_call,
+                live_call,
+                settled,
+                unknown,
+                reserved,
+            ]
+        )
+        await db.flush()
+        identifiers = {
+            "messages": (stale_message.id, recent_message.id),
+            "calls": (expired_call.id, fresh_call.id, live_call.id),
+            "receipts": (settled.id, unknown.id, reserved.id),
+        }
+
+    result = await sweep_once(env)
+    assert result.tool_calls_reclaimed == 1
+    assert result.messages_reclaimed == 1
+    assert result.receipts_reclaimed == 1
+
+    stale_id, recent_id = identifiers["messages"]
+    expired_id, fresh_id, live_id = identifiers["calls"]
+    settled_id, unknown_id, reserved_id = identifiers["receipts"]
+    async with env.factory() as db:
+        assert await db.get(Message, stale_id) is None
+        assert await db.get(Message, recent_id) is not None
+        assert await db.get(ToolCall, expired_id) is None
+        assert await db.get(ToolCall, fresh_id) is not None
+        # An active run keeps even its expired intermediate result.
+        assert await db.get(ToolCall, live_id) is not None
+        assert await db.get(RequestReceipt, settled_id) is None
+        assert (await db.get(RequestReceipt, unknown_id)).status == "unknown"
+        assert (await db.get(RequestReceipt, reserved_id)).status == "reserved"

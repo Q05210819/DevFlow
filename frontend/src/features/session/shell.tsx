@@ -26,6 +26,7 @@ export function ProtectedShell({ children, adminOnly = false }: { children: Reac
         <Link href="/">概览</Link>
         <Link href="/repositories">仓库</Link>
         <Link href="/knowledge">检索</Link>
+        <Link href="/conversations">会话</Link>
         {session.user.role === "admin" && <>
           <Link href="/admin/users">成员管理</Link>
           <Link href="/admin/audit">审计日志</Link>

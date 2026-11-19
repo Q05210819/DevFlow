@@ -18,6 +18,8 @@ from devflow.audit.service import request_id_context
 from devflow.auth.admin import router as admin_router
 from devflow.auth.routes import router as auth_router
 from devflow.auth.service import AuthService
+from devflow.chat.routes import router as chat_router
+from devflow.chat.service import ChatService
 from devflow.config import Settings
 from devflow.db import create_session_factory, schema_is_current
 from devflow.errors import AppError
@@ -104,6 +106,11 @@ def create_app(
                 if app.state.repository_policy is not None
                 else None
             )
+            app.state.chat_service = (
+                ChatService(factory, app.state.repository_policy)
+                if app.state.repository_policy is not None
+                else None
+            )
             app.state.auth_service = (
                 AuthService(factory, app.state.github, cipher, configured)
                 if factory is not None and cipher is not None
@@ -147,6 +154,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(workspace_router)
     app.include_router(knowledge_router)
+    app.include_router(chat_router)
     app.include_router(job_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
@@ -168,7 +176,11 @@ def create_app(
         finally:
             request_id_context.reset(token)
         response.headers["X-Request-ID"] = request.state.request_id
-        if request.url.path.startswith("/api/v1/repositories/"):
+        if request.url.path.startswith("/api/v1/conversations"):
+            # Private history and previews never enter a shared cache, including
+            # dependency, validation and denial responses.
+            response.headers["Cache-Control"] = "private, no-store"
+        elif request.url.path.startswith("/api/v1/repositories/"):
             resource = request.url.path.split("/")[5:6]
             if resource == ["workspaces"]:
                 # Includes dependency/validation/denial responses as well as content.

@@ -65,6 +65,7 @@ JobErrorCode = Literal[
     "answer_validation_failed",
     "model_not_configured",
     "model_call_outcome_unknown",
+    "cancelled",
 ]
 IdempotencyKey = Annotated[str, Field(strict=True, pattern=r"^[!-~]{1,128}$")]
 
@@ -142,9 +143,14 @@ class ChatCleanupInput(StrictDTO):
 
 
 class ChatCleanupResult(StrictDTO):
+    """Checkpoint counters plus separately bounded content reclaim counts."""
+
     examined: int = Field(strict=True, ge=0, le=100)
     reclaimed: int = Field(strict=True, ge=0, le=100)
     bytes_reclaimed: int = Field(strict=True, ge=0)
+    tool_calls_reclaimed: int = Field(default=0, strict=True, ge=0, le=100)
+    messages_reclaimed: int = Field(default=0, strict=True, ge=0, le=100)
+    receipts_reclaimed: int = Field(default=0, strict=True, ge=0, le=100)
 
 
 class EventPayload(BaseModel):

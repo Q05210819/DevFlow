@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     chat_budget_minor_unit: Decimal | None = Field(
         default=None, gt=0, le=1, max_digits=6, decimal_places=6
     )
+    # The provider key stays in a mounted file; a missing or unreadable file
+    # leaves the run at model_not_configured instead of failing the worker.
+    chat_api_key_file: Path | None = None
     chat_pricing_version: str | None = Field(default=None, pattern=r"^[!-~]{1,64}$")
     chat_pricing_valid_until: datetime | None = None
     chat_input_price_per_million: Decimal | None = Field(

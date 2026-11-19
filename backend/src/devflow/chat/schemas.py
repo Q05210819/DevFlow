@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import Field
 
 from devflow.facts.schemas import StrictDTO
+from devflow.knowledge.schemas import QuerySelection
 
 Count = Annotated[int, Field(strict=True, ge=0)]
 PositiveCount = Annotated[int, Field(strict=True, gt=0)]
@@ -20,10 +21,56 @@ class ConversationView(StrictDTO):
     created_at: datetime
 
 
+class ConversationCreate(StrictDTO):
+    selected_repository_ids: Annotated[
+        tuple[UUID, ...], Field(min_length=1, max_length=3)
+    ]
+
+
+class RunSummary(StrictDTO):
+    """Only identifiers and a fixed state; never a question or answer body."""
+
+    run_id: UUID
+    job_id: UUID
+    status: Literal["queued", "running", "succeeded", "failed"]
+
+
+class ConversationSummary(StrictDTO):
+    id: UUID
+    selected_repository_ids: tuple[UUID, ...]
+    created_at: datetime
+    active_run: RunSummary | None = None
+    latest_run: RunSummary | None = None
+
+
+class ConversationList(StrictDTO):
+    conversations: tuple[ConversationSummary, ...]
+
+
 class RunReceipt(StrictDTO):
     run_id: UUID
     job_id: UUID
     message_id: UUID
+
+
+class MessageSubmission(StrictDTO):
+    selection: QuerySelection
+    question: Annotated[str, Field(strict=True, min_length=1, max_length=2048)]
+
+
+class CitationView(StrictDTO):
+    """A bounded pointer; previews are fetched from the private citation route."""
+
+    citation_id: str
+    url: str
+    repository_id: UUID
+    source_repository_id: UUID
+    path: str | None
+    # The frozen version this evidence came from, so the UI can show the round's
+    # SHA without trusting a client-supplied value.
+    sha: str | None
+    start_line: Count
+    end_line: Count
 
 
 class MessageView(StrictDTO):
@@ -32,6 +79,7 @@ class MessageView(StrictDTO):
     body: str
     ordinal: Count
     created_at: datetime
+    citations: tuple[CitationView, ...] = ()
 
 
 class MessagePage(StrictDTO):
@@ -39,6 +87,13 @@ class MessagePage(StrictDTO):
 
     messages: tuple[MessageView, ...]
     next_cursor: str | None
+
+
+class DeletionReceipt(StrictDTO):
+    """Bodies are already gone; the Job reclaims official checkpoint threads."""
+
+    conversation_id: UUID
+    job_id: UUID
 
 
 class Reservation(StrictDTO):

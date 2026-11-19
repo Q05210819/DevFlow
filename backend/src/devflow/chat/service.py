@@ -14,7 +14,8 @@ from datetime import timedelta
 from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import Text, func, select, text
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.dialects.postgresql import insert
 
 from devflow.audit.service import AuditEntry, write_audit
@@ -27,11 +28,16 @@ from devflow.chat.models import (
     ToolCall,
 )
 from devflow.chat.schemas import (
+    CitationView,
+    ConversationList,
+    ConversationSummary,
     ConversationView,
+    DeletionReceipt,
     MessagePage,
     MessageView,
     RunOutcome,
     RunReceipt,
+    RunSummary,
 )
 from devflow.errors import AppError
 from devflow.github.client import not_found
@@ -40,17 +46,21 @@ from devflow.jobs.queue import Queue
 from devflow.jobs.schemas import IdempotencyKey, JobErrorCode
 from devflow.jobs.service import append_event
 from devflow.knowledge.access import KnowledgeAccess
-from devflow.knowledge.schemas import QuerySelection
+from devflow.knowledge.schemas import EvidenceManifest, QuerySelection
 from devflow.sync.scope import transaction
 
 _KEY = TypeAdapter(IdempotencyKey)
 _ERROR = TypeAdapter(JobErrorCode)
 _KIND = "chat.run"
+_CLEANUP_KIND = "chat.cleanup"
 _GRAPH_VERSION = "chat-graph-v1"
 MAX_REPOSITORIES = 3
 MAX_CONVERSATIONS = 100
 MAX_MESSAGES = 200
 MAX_QUESTION_BYTES = 2048
+MESSAGE_CAPACITY = 256 * 1024 * 1024
+CLEANUP_LIMIT = 100
+_MESSAGE_LOCK = "devflow:chat:messages"
 QUEUE_DEADLINE = timedelta(minutes=10)
 DEFAULT_HISTORY_LIMIT = 30
 MAX_HISTORY_LIMIT = 100
@@ -138,6 +148,7 @@ class ChatService:
                 return await self._replay_create(db, actor, key, input_hash)
             # Insert-then-count counts archived rows and is serialized by the
             # actor row lock above; a rejected 101st row rolls back with it.
+            # Archiving never bypasses the durable per-user bound.
             count = await db.scalar(
                 select(func.count())
                 .select_from(Conversation)
@@ -194,6 +205,7 @@ class ChatService:
             or len(question.encode("utf-8")) > MAX_QUESTION_BYTES
         ):
             raise _invalid()
+        question_bytes = len(question.encode("utf-8"))
         async with self.factory() as db:
             conversation = await db.get(Conversation, conversation_id)
             if conversation is None or conversation.actor_id != actor.id:
@@ -277,6 +289,7 @@ class ChatService:
                 # Leave room for one user question and one bounded answer.
                 if count + 2 > MAX_MESSAGES:
                     raise _storage_exhausted()
+                await self._ensure_message_capacity(db, question_bytes)
                 ordinal = await db.scalar(
                     select(func.coalesce(func.max(Message.ordinal) + 1, 0)).where(
                         Message.conversation_id == conversation_id
@@ -305,7 +318,7 @@ class ChatService:
                         ordinal=ordinal,
                         role="user",
                         body=question,
-                        body_bytes=len(question.encode("utf-8")),
+                        body_bytes=question_bytes,
                         created_at=now,
                     )
                 )
@@ -410,6 +423,18 @@ class ChatService:
                 )
             )
             body, manifest = self._answer_body(call)
+            manifest_bytes = (
+                0
+                if manifest is None
+                else len(
+                    json.dumps(
+                        manifest, separators=(",", ":"), ensure_ascii=False
+                    ).encode("utf-8")
+                )
+            )
+            await self._ensure_message_capacity(
+                session, len(body.encode("utf-8")) + manifest_bytes
+            )
             ordinal = await session.scalar(
                 select(func.coalesce(func.max(Message.ordinal) + 1, 0)).where(
                     Message.conversation_id == run.conversation_id
@@ -527,11 +552,240 @@ class ChatService:
                     body=row.body,
                     ordinal=row.ordinal,
                     created_at=row.created_at,
+                    citations=self._citation_views(row.manifest),
                 )
                 for row in page
             ),
             next_cursor=str(page[-1].ordinal) if len(rows) > limit else None,
         )
+
+    async def conversations(self, actor: Actor) -> ConversationList:
+        """List only this creator's live conversations; never a message body."""
+        async with self.factory() as db:
+            rows = list(
+                await db.scalars(
+                    select(Conversation)
+                    .where(
+                        Conversation.actor_id == actor.id,
+                        Conversation.archived_at.is_(None),
+                    )
+                    .order_by(Conversation.created_at.desc(), Conversation.id.desc())
+                    .limit(MAX_CONVERSATIONS)
+                )
+            )
+            if not rows:
+                return ConversationList(conversations=())
+            identifiers = tuple(row.id for row in rows)
+            member_rows = (
+                await db.execute(
+                    select(
+                        ConversationRepository.conversation_id,
+                        ConversationRepository.repository_id,
+                    )
+                    .where(ConversationRepository.conversation_id.in_(identifiers))
+                    .order_by(
+                        ConversationRepository.conversation_id,
+                        ConversationRepository.ordinal,
+                    )
+                )
+            ).all()
+            runs = list(
+                await db.scalars(
+                    select(AgentRun)
+                    .where(AgentRun.conversation_id.in_(identifiers))
+                    .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+                )
+            )
+        members = {identifier: [] for identifier in identifiers}
+        for conversation_id, repository_id in member_rows:
+            members[conversation_id].append(repository_id)
+        latest, active = {}, {}
+        for run in runs:
+            latest.setdefault(run.conversation_id, run)
+            if run.terminal_at is None:
+                active.setdefault(run.conversation_id, run)
+        return ConversationList(
+            conversations=tuple(
+                ConversationSummary(
+                    id=row.id,
+                    selected_repository_ids=tuple(members[row.id]),
+                    created_at=row.created_at,
+                    active_run=self._run_summary(active.get(row.id)),
+                    latest_run=self._run_summary(latest.get(row.id)),
+                )
+                for row in rows
+            )
+        )
+
+    @staticmethod
+    def _run_summary(run) -> RunSummary | None:
+        if run is None:
+            return None
+        return RunSummary(run_id=run.id, job_id=run.job_id, status=run.status)
+
+    async def citation(
+        self,
+        actor: Actor,
+        conversation_id: UUID,
+        message_id: UUID,
+        citation_id: str,
+        *,
+        citations,
+        cursor: str | None = None,
+    ):
+        """Preview one stored manifest entry after full conversation re-auth."""
+        if (
+            not isinstance(conversation_id, UUID)
+            or not isinstance(message_id, UUID)
+            or not isinstance(citation_id, str)
+        ):
+            raise _invalid()
+        await self.authorize(actor, conversation_id, fresh=False)
+        async with self.factory() as db:
+            message = await db.scalar(
+                select(Message).where(
+                    Message.id == message_id,
+                    Message.conversation_id == conversation_id,
+                )
+            )
+        if message is None or message.role != "assistant" or message.manifest is None:
+            raise not_found()
+        try:
+            manifest = EvidenceManifest.model_validate(message.manifest)
+        except ValidationError:
+            raise not_found() from None
+        return await citations.preview(actor, manifest, citation_id, cursor=cursor)
+
+    async def delete(
+        self, actor: Actor, conversation_id: UUID, key: str
+    ) -> DeletionReceipt:
+        """Archive a conversation, erase its bodies and enqueue checkpoint cleanup.
+
+        Deleting content never releases an unknown reservation, a receipt or a
+        monthly aggregate: request identity and possible charges outlive the
+        bodies. The single deterministic cleanup Job is idempotent per
+        conversation.
+        """
+        try:
+            _KEY.validate_python(key)
+        except ValidationError:
+            raise _invalid() from None
+        if not isinstance(conversation_id, UUID):
+            raise _invalid()
+        async with self.factory() as db:
+            conversation = await db.get(Conversation, conversation_id)
+            if conversation is None or conversation.actor_id != actor.id:
+                raise not_found()
+            members = await self._members(db, conversation_id)
+        if not members:
+            raise not_found()
+        cleanup_key = f"delete:{conversation_id}"
+        async with transaction(self.factory) as db:
+            conversation = await db.scalar(
+                select(Conversation)
+                .where(
+                    Conversation.id == conversation_id,
+                    Conversation.actor_id == actor.id,
+                )
+                .with_for_update()
+            )
+            if conversation is None:
+                raise not_found()
+            if await self._members(db, conversation_id) != members:
+                raise not_found()
+            existing = await db.scalar(
+                select(Job)
+                .where(
+                    Job.requested_by.is_(None),
+                    Job.kind == _CLEANUP_KIND,
+                    Job.repository_id == members[0],
+                    Job.idempotency_key == cleanup_key,
+                )
+                .with_for_update()
+            )
+            if conversation.archived_at is not None and existing is not None:
+                return DeletionReceipt(
+                    conversation_id=conversation_id, job_id=existing.id
+                )
+            now = await db.scalar(select(func.clock_timestamp()))
+            active = await db.scalar(
+                select(AgentRun)
+                .where(
+                    AgentRun.conversation_id == conversation_id,
+                    AgentRun.terminal_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if active is not None:
+                job = await db.scalar(
+                    select(Job).where(Job.id == active.job_id).with_for_update()
+                )
+                if job is None:
+                    raise not_found()
+                if job.status not in ("succeeded", "failed"):
+                    fence = JobFence(
+                        status=job.status,
+                        owner=job.lease_owner,
+                        generation=job.lease_generation,
+                        attempt=job.attempt,
+                    )
+                    await retire_run(db, job.id, fence, RunOutcome(status="cancelled"))
+                    job.status = "failed"
+                    job.error_code = "cancelled"
+                    job.result = None
+                    job.lease_owner = None
+                    job.lease_expires_at = None
+                    job.updated_at = now
+                    await Queue._transition(db, job, "job.failed")
+            run_ids = select(AgentRun.id).where(
+                AgentRun.conversation_id == conversation_id
+            )
+            await db.execute(sa_delete(ToolCall).where(ToolCall.run_id.in_(run_ids)))
+            await db.execute(
+                sa_delete(Message).where(Message.conversation_id == conversation_id)
+            )
+            conversation.archived_at = now
+            conversation.updated_at = now
+            input_data = {"version": 1, "limit": CLEANUP_LIMIT}
+            input_hash = self._digest(
+                {"conversation_id": str(conversation_id), "cleanup": input_data}
+            )
+            job = await db.scalar(
+                insert(Job)
+                .values(
+                    id=uuid4(),
+                    kind=_CLEANUP_KIND,
+                    repository_id=members[0],
+                    requested_by=None,
+                    input=input_data,
+                    input_hash=input_hash,
+                    idempotency_key=cleanup_key,
+                    max_attempts=self.max_attempts,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["repository_id", "kind", "idempotency_key"],
+                    index_where=text("requested_by IS NULL"),
+                )
+                .returning(Job)
+            )
+            if job is None:
+                if existing is None:
+                    raise not_found()
+                job = existing
+                if job.status not in ("succeeded", "failed"):
+                    return DeletionReceipt(
+                        conversation_id=conversation_id, job_id=job.id
+                    )
+                job.status = "queued"
+                job.attempt = 0
+                job.error_code = None
+                job.result = None
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.updated_at = now
+            await append_event(db, job, "queued")
+            await db.flush()
+            return DeletionReceipt(conversation_id=conversation_id, job_id=job.id)
 
     async def authorize(self, actor: Actor, conversation_id: UUID, *, fresh: bool):
         async with self.factory() as db:
@@ -540,6 +794,79 @@ class ChatService:
                 raise not_found()
             members = await self._members(db, conversation_id)
         return await self.access.verify(actor, members, fresh=fresh)
+
+    async def _ensure_message_capacity(self, db, incoming: int) -> None:
+        """Keep the global body+manifest footprint bounded.
+
+        Expired bodies are the only data ever deleted here; unexpired history
+        is never sacrificed to make room. The advisory lock serializes all
+        inserts in every worker, so the byte sum cannot pass the cap by racing.
+        """
+        await db.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(_MESSAGE_LOCK, 0)))
+        )
+        for _ in range(8):
+            total = int(
+                await db.scalar(
+                    select(
+                        func.coalesce(
+                            func.sum(
+                                Message.body_bytes
+                                + func.coalesce(
+                                    func.octet_length(Message.manifest.cast(Text)), 0
+                                )
+                            ),
+                            0,
+                        )
+                    )
+                )
+                or 0
+            )
+            if total + incoming <= MESSAGE_CAPACITY:
+                return
+            if not await self._purge_expired_messages(db):
+                break
+        raise _storage_exhausted()
+
+    async def _purge_expired_messages(self, db) -> int:
+        identifiers = list(
+            await db.scalars(
+                select(Message.id)
+                .where(
+                    Message.created_at
+                    <= func.clock_timestamp() - text("interval '90 days'")
+                )
+                .order_by(Message.created_at, Message.id)
+                .limit(CLEANUP_LIMIT)
+                .with_for_update(skip_locked=True)
+            )
+        )
+        if not identifiers:
+            return 0
+        await db.execute(sa_delete(Message).where(Message.id.in_(identifiers)))
+        return len(identifiers)
+
+    @staticmethod
+    def _citation_views(manifest) -> tuple[CitationView, ...]:
+        if not isinstance(manifest, dict):
+            return ()
+        try:
+            parsed = EvidenceManifest.model_validate(manifest)
+        except ValidationError:
+            return ()
+        return tuple(
+            CitationView(
+                citation_id=entry.citation_id,
+                url=entry.url,
+                repository_id=entry.identity.repository_id,
+                source_repository_id=entry.identity.source_repository_id,
+                path=entry.identity.path,
+                sha=entry.identity.sha,
+                start_line=entry.location.start_line,
+                end_line=entry.location.end_line,
+            )
+            for entry in parsed.entries
+        )
 
     async def _members(self, db, conversation_id: UUID) -> tuple[UUID, ...]:
         return tuple(

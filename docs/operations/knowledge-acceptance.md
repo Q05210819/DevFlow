@@ -211,3 +211,66 @@
 - 生产部署、真实 GitHub App、生产数据库、真实 Milvus、正式备份恢复与正式验收。
 - 本次没有重跑完整的 1280 项后端测试集；上述聚焦与相关回归结果不能表述为整套后端或生产验收通过。
 - Git 提交/合并按既有审批限制执行。
+
+## 3D 私有会话界面与第三阶段本地交付（Task 6，2026-11-06）
+
+本节记录 3D Task 6 的本地实现与验证：私有会话 REST、取消/删除、内容与费用保留、聊天界面和受控浏览器用例。所有后端用例使用真实 PostgreSQL、真实 Job/租约/官方 saver；只有模型 HTTP transport 是脚本化的。没有真实云调用、真实 Milvus、真实 BGE 推理或正式部署。
+
+### 环境与边界
+
+- Windows 11；后端 Python 3.12.13、UV 0.11.25；前端 Node 24.21.0（仓库内 `.cache/node/node-v24.21.0-win-x64`）；专用测试 PostgreSQL 17.11（`127.0.0.1:55439/devflow_test`）。
+- 唯一迁移 head 仍为 `0020_chat_retention`；Task 6 未新增表，沿用 Task 4/5 的 `chat_cleanup` Job kind 与检查点核算表。
+- 云模型仍默认关闭。新增 `CHAT_API_KEY_FILE` 设置与 Worker 显式构造入口：缺少 `CHAT_CLOUD_ENABLED=true`、可读密钥文件或完整价格表时 provider 为 `None`，run 终止为 `model_not_configured`，本地检索照常执行。
+- Compose 的 `model-worker` 通过可选 `infra/chat.env`（模板 `infra/chat.env.example`）读取云配置，并把 `DEVFLOW_SECRETS_DIR` 只读挂到 `/run/devflow-secrets`；文件缺失时保持关闭。未执行 `docker compose config`/真实镜像验证。
+
+### 执行命令与结果
+
+在 `backend/` 下执行（工作树 `D:/python/DevFlow/.worktrees/data-foundation`）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `uv run --no-sync pytest tests/integration/test_chat_routes.py tests/integration/test_chat_flow.py tests/integration/test_chat_retention.py tests/integration/test_chat_privacy.py tests/integration/test_chat_budget.py tests/integration/test_chat_graph.py tests/integration/test_chat_recovery.py tests/integration/test_chat_checkpoints.py tests/test_chat_context.py tests/test_chat_provider.py tests/integration/test_job_visibility.py tests/integration/test_sse.py tests/integration/test_migrations.py tests/test_job_schemas.py -q` | 133 passed in 138.13s |
+| `uv run --no-sync pytest tests/integration/test_job_visibility.py tests/integration/test_sse.py tests/integration/test_migrations.py tests/integration/test_worker_recovery.py tests/integration/test_worker_denial_fencing.py tests/integration/test_job_transactions.py tests/integration/test_job_submission.py tests/integration/test_model_queue.py tests/integration/test_queue_leases.py tests/test_model_worker.py tests/test_worker_chat_provider.py -q` | 143 passed in 142.65s |
+| `uv run --no-sync pytest tests/integration/test_chat_provider_live.py -q` | 1 skipped（默认禁用，未消费云预算） |
+| `uv run --no-sync ruff check src tests migrations` / `ruff format --check src tests migrations` | All checks passed / 251 files already formatted |
+| `uv lock --check` | Resolved 108 packages |
+| `uv run --no-sync alembic heads` | `0020_chat_retention (head)` |
+
+前端在 `frontend/` 下执行（Node 24.21.0）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm.cmd run typecheck` | 通过（`next typegen` + `tsc --noEmit`） |
+| `npm.cmd run lint` | 通过，无错误/警告 |
+| `npm.cmd run build` | 通过；新增静态路由 `/conversations` 与动态路由 `/conversations/[conversationId]` |
+| `npm.cmd run test:e2e -- tests/private-chat.spec.ts tests/chat-flow.spec.ts` | 4 passed（连续 3 次一致） |
+
+### 覆盖的行为
+
+- 路由授权：`POST/GET /conversations`、`GET/POST /conversations/{id}/messages`、引用预览和 `POST /conversations/{id}/deletions` 每次都重新校验会话创建者与全部参与仓库；跨用户、来源撤权后历史/引用/提交/Job/取消/SSE 回放均返回 404，且 `Cache-Control: private, no-store` 覆盖依赖、校验和拒绝响应。
+- 历史不是上下文：上一轮消息在 UI 可见，但下一轮实际发送的字节只包含当前问题与本轮证据；用脚本化 transport 捕获的最终 body 验证旧问题、旧答案和旧路径都不在请求中。
+- 引用与版本：消息视图返回服务端 manifest 派生的 citation 指针和冻结 SHA；历史引用在新版本发布后仍可读取并标记为非当前。重叠 chunk 合并为单条证据。
+- 取消：`POST /jobs/{id}/cancel` 仅创建者可调用，同一幂等键可重试；Job 与 run 在同一事务内进入终态、retire 并清空 accepted，旧 lease 无法再写检查点或发布答案；未领取的 run 不产生任何模型调用。
+- 删除：会话删除立即清除消息正文与中间工具结果、归档会话并生成确定性 `chat.cleanup` Job；活动 run 在同一事务内被取消并 retire。清理 Job 在自己的 lease 下删除官方 thread，重复删除/清理幂等；已结算费用记录按 90 天保留，未知预占与月度汇总不受影响。
+- 内容保留：终态 run 的过期 ToolCall、90 天前消息正文和已结算 receipt 被回收；未到期消息、活动 run 的过期中间结果、`unknown`/`reserved` receipt 保持不动；清理结果分别计数。
+- 界面：会话列表创建会话（固定 1–3 仓库）、会话页展示范围、目标/旧 active SHA、每轮引用 SHA、进度、缺口提示、引用预览、取消和二次确认删除；撤权后清除会话与引用缓存并隐藏私有正文；退出登录沿用既有全局 query 清理。
+- 云配置：新增 `tests/test_worker_chat_provider.py` 证明默认无 provider、缺失/空白密钥文件保持关闭、完整配置才构造固定适配器；`test_chat_provider_live.py` 默认跳过，要求显式开关、轮换密钥、完整正预算/价格表和一次合成请求。
+
+### 整套后端回归（一次运行，未全绿）
+
+`uv run --no-sync pytest tests/ -m "not live_github and not live_chat" -q`：**1278 passed / 5 failed / 13 skipped / 1 deselected in 1146.51s**。5 个失败均属既有 Workspace/迁移断言，与本轮聊天改动无调用关系：
+
+- `test_workspace_prepare.py::test_workspace_downgrade_preserves_immutable_provenance` 单独运行也失败：仍期望 `alembic_version == 0009_workspace`，而实际 head 已是 `0020_chat_retention`；
+- `test_workspace_retention.py` 3 项原生进程用例单独运行也失败：Windows 上 PID/守卫身份不一致（例如记录 pid 2264 而当前进程 27304）；
+- `test_workspace_prepare.py::test_another_authorized_member_reads_ready_snapshot_after_creator_disabled` 只在整套运行中出现，单独重跑两次均通过，属于既有整包级不稳定，未定位为聊天改动引起。
+
+没有修改这些用例、放宽断言或把它们记为通过；它们仍需在独立任务中处理。本节的聊天结论不依赖这些失败项。
+
+### 未执行项（NOT EXECUTED）
+
+- 真实 DashScope/Qwen 调用、真实 usage/截断/参数兼容性与账单对账；live 用例未运行。
+- 真实 Milvus、真实 bge-m3/bge-reranker 推理与双模型并发；聊天用例使用确定性假推理与假索引。
+- `chat-flow.spec.ts` 与 `private-chat.spec.ts` 是受控路由的浏览器用例（真实页面、Query、SSE 与缓存逻辑），不是真实 API/Worker 全栈联调；没有新增聊天专用的真实栈 Playwright 场景。
+- Docker 镜像构建、Compose `config`/启动、Linux 卷权限、强杀恢复、备份恢复与正式部署。
+- 完整后端测试集未在本轮重跑；上述聚焦与回归结果不能表述为整套后端或正式验收通过。
+- Git 提交/合并按既有审批限制执行。

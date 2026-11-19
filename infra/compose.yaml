@@ -205,10 +205,18 @@ services:
       MODEL_STARTUP_TIMEOUT_SECONDS: ${MODEL_STARTUP_TIMEOUT_SECONDS:-1800}
       MODEL_DRAIN_TIMEOUT_SECONDS: ${MODEL_DRAIN_TIMEOUT_SECONDS:-120}
       KNOWLEDGE_TOKENIZER_PATH: ${KNOWLEDGE_TOKENIZER_PATH:-/models/bge-m3}
+    # Cloud chat is off unless an operator supplies a complete price sheet and
+    # a rotated key file. A missing optional file leaves the mode disabled.
+    env_file:
+      - path: ${DEVFLOW_CHAT_ENV_FILE:-./chat.env}
+        required: false
     volumes:
       - workspace-data:/var/lib/devflow/workspace
       - model-owner:/var/lib/devflow/model
       - ${DEVFLOW_MODEL_DIR:-./.models}:/models:ro
+      # Read-only mount for the optional CHAT_API_KEY_FILE; the file itself is
+      # created by the operator and never tracked.
+      - ${DEVFLOW_SECRETS_DIR:?Set absolute secrets directory}:/run/devflow-secrets:ro
     depends_on:
       postgres: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}

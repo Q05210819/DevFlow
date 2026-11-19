@@ -1,6 +1,6 @@
 # DevFlow
 
-面向单团队的私有仓库事实工作台：GitHub 登录、成员允许列表、仓库发现与接入、只读 Issue/PR/Actions 后台同步、可追溯健康事实、访问检查、撤权和审计。2B 增加按固定 SHA 准备的只读代码 Workspace、目录/文件/字面搜索及来源行链接；只抓显式 ref 到服务自有裸对象库，不 checkout、不运行仓库代码、不修改 GitHub 内容、不调用模型。运行环境与外部验收仍有未执行门槛，见验收记录。
+面向单团队的私有仓库事实工作台：GitHub 登录、成员允许列表、仓库发现与接入、只读 Issue/PR/Actions 后台同步、可追溯健康事实、访问检查、撤权和审计。2B 增加按固定 SHA 准备的只读代码 Workspace、目录/文件/字面搜索及来源行链接；只抓显式 ref 到服务自有裸对象库，不 checkout、不运行仓库代码、不修改 GitHub 内容。3A–3C 增加知识导入、本地 bge-m3 混合索引与带引用检索；3D 增加仅创建者可见的私有会话、可恢复受控 ChatAgent、持久费用账本和可核验引用。云模型调用默认关闭，真实 BGE/Milvus/云/正式部署仍未验收。
 
 本地合成 GitHub 联调与真实 GitHub 验收分别记录。真实 App、私有仓库与外部域名尚未提供，真实接入和外部部署未执行；不能据离线测试认定整个平台全部验收完成。
 
@@ -66,6 +66,30 @@ docker compose --env-file .env -p devflow -f infra/compose.yaml up -d
 
 CPU 或与其他服务分时共享 GPU/内存的配置必须显式选择，并单独测量冷热延迟、峰值 RAM/VRAM 与并存服务；这类实验不能称为同机全栈通过。真实 BGE/CUDA 推理、Linux 镜像运行和 30 题检索质量仍为 **NOT EXECUTED**，后者属于 3C 验收。
 
+## 3D 私有会话
+
+私有会话只对创建者可见，创建时固定 1–3 个仓库；每轮另固定实际使用的索引 SHA。旧消息只在页面展示，不会自动加入下一轮云请求；每轮只发送当前问题与本轮检索到的完整证据块。回答必须引用最后一次请求实际收到的 citation ID，未知或越界引用返回 `answer_validation_failed` 而不是发布答案。
+
+同一会话最多 1 个活动 run，全局聊天并发 1；执行窗口 180 秒、排队最长 10 分钟，节点/检索/模型请求计数持久化且不因重启清零。进度只通过既有 Job SSE 推送安全状态，最终答案由私有 REST 读取；页面断开不取消任务，取消与过期回收在同一事务内撤销旧执行权并 retire 检查点。
+
+真实云调用默认关闭。启用需要同时提供：
+
+- `CHAT_CLOUD_ENABLED=true` 与只读挂载的 `CHAT_API_KEY_FILE`（本机/部署秘密文件，不提交仓库）；
+- 正的每 run 预算、正的 UTC 月度预算、币种与最小货币单位；
+- 未过期的定价版本、输入/输出价格和时区明确的 `CHAT_PRICING_VALID_UNTIL`。
+
+缺少任意一项会拒绝调用（`model_not_configured`），本地检索仍可用。Compose 的 `model-worker` 通过可选的 `infra/chat.env`（示例见 `infra/chat.env.example`）读取这些变量，密钥文件挂载在 `/run/devflow-secrets/chat_api_key`。模型、Base URL、关闭 thinking 与 `max_completion_tokens=1024` 固定在校验过的适配器中。
+
+官方 LangGraph saver 的 schema 必须显式部署一次，API/Worker 启动或请求路径不会隐式建表：
+
+```powershell
+uv --directory backend run --env-file ../.env --no-sync python -m devflow.chat.checkpoints --setup
+```
+
+`chat.cleanup` 是普通 Job，由既有 Worker 维护 tick 每小时至多生成一个，删除终态且已 retire 的官方 thread，并回收过期的消息正文、中间工具结果与已结算费用记录；未知预占、月度汇总和未到期消息不会被删除。终态图数据最长保留 24 小时，全局逻辑上限 128 MiB。
+
+真实云协议往返由默认跳过的 `tests/integration/test_chat_provider_live.py` 单独把关：只有设置 `DEVFLOW_CHAT_LIVE=1`、`DEVFLOW_CHAT_LIVE_KEY_FILE` 和完整价格表后才发出一次合成请求，且不读取用户仓库。该结果不能证明供应商普遍遵约或账单绝对上限；真实 Milvus/双模型/云/正式部署与恢复演练仍为 NOT EXECUTED。
+
 ## 测试
 
 先确认专用测试端口 `127.0.0.1:55439` 的归属，再启动测试 PostgreSQL；不操作其他项目容器或业务数据库。
@@ -93,6 +117,9 @@ Pop-Location
 ```powershell
 uv --directory backend run --no-sync pytest tests/integration/test_full_flow.py tests/integration/test_data_sync_flow.py -q
 npm.cmd --prefix frontend run test:e2e -- tests/full-flow.spec.ts tests/data-flow.spec.ts
+
+uv --directory backend run --no-sync pytest tests/integration/test_chat_routes.py tests/integration/test_chat_flow.py tests/integration/test_chat_retention.py -q
+npm.cmd --prefix frontend run test:e2e -- tests/private-chat.spec.ts tests/chat-flow.spec.ts
 ```
 
 停止测试数据库使用 `docker compose -p devflow-test -f infra/compose.test.yaml stop`，保留测试卷。UV 缓存受限时可使用仓库内 `.cache/uv`；浏览器缓存可通过 `PLAYWRIGHT_BROWSERS_PATH` 指定本机目录。

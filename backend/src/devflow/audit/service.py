@@ -76,6 +76,7 @@ ReasonCode = Literal[
     "model_call_outcome_unknown",
     "answer_validation_failed",
     "state_limit",
+    "cancelled",
 ]
 
 

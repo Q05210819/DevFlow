@@ -5,7 +5,7 @@ import json
 from uuid import UUID
 
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -346,3 +346,68 @@ class JobService:
     async def get_visible(self, actor: Actor, job_id: UUID) -> JobView:
         view, _ = await self.visibility(actor, job_id)
         return view
+
+    async def cancel(self, actor: Actor, job_id: UUID, idempotency_key: str) -> JobView:
+        """Creator-only cancellation of one chat run.
+
+        The conversation's full source set is re-authorized first, exactly like
+        reading the Job. Within one transaction the Job row and its active run
+        are retired together, so a Worker that still holds the old lease can
+        never publish an answer afterwards. A terminal Job is returned
+        unchanged; only ``chat.run`` Jobs have a user-cancellable lifecycle.
+        """
+        if not isinstance(job_id, UUID):
+            raise AppError("validation_error", 422, "Invalid request")
+        try:
+            _KEY.validate_python(idempotency_key)
+        except ValidationError:
+            raise AppError("validation_error", 422, "Invalid request") from None
+        view, snapshots = await self.visibility(actor, job_id)
+        if view.status in ("succeeded", "failed"):
+            return view
+        # Imported lazily: chat submission depends on this module.
+        from devflow.chat.schemas import RunOutcome
+        from devflow.chat.service import JobFence, retire_run
+
+        async with self.factory.begin() as session:
+            await self._lock_authorizations(session, actor, snapshots)
+            job = await session.scalar(
+                select(Job).where(Job.id == job_id).with_for_update()
+            )
+            if job is None or job.requested_by != actor.id:
+                raise not_found()
+            if job.kind != _CHAT_KIND:
+                raise AppError("invalid_state", 409, "Job cannot be cancelled")
+            if job.status in ("succeeded", "failed"):
+                return JobView.model_validate(job)
+            fence = JobFence(
+                status=job.status,
+                owner=job.lease_owner,
+                generation=job.lease_generation,
+                attempt=job.attempt,
+            )
+            await retire_run(session, job.id, fence, RunOutcome(status="cancelled"))
+            now = await session.scalar(select(func.clock_timestamp()))
+            job.status = "failed"
+            job.error_code = "cancelled"
+            job.result = None
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.updated_at = now
+            await append_event(session, job, "failed", "cancelled")
+            # The actor already holds its User lock; recording it here is both
+            # safe and honest about who retired the run.
+            await write_audit(
+                session,
+                AuditEntry(
+                    actor_id=actor.id,
+                    action="job.failed",
+                    resource_type="job",
+                    resource_id=job.id,
+                    job_id=job.id,
+                    outcome="failure",
+                    reason_code="cancelled",
+                ),
+            )
+            await session.flush()
+            return JobView.model_validate(job)

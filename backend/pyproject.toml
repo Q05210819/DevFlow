@@ -52,3 +52,9 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.9",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "live_github: requires a real GitHub App, private installation and network",
+    "live_chat: spends real cloud budget; opt in explicitly",
+]

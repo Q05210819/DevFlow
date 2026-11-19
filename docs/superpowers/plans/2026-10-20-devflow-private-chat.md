@@ -111,12 +111,12 @@ Conversation创建是同步短元数据事务，返回ConversationView：仍要�
 
 **Interfaces:** POST/GET `/conversations`；GET/POST `/conversations/{id}/messages`；GET `/conversations/{id}/messages/{message_id}/citations/{citation_id}`；POST `/conversations/{id}/deletions`返回有界Job。共享3C `CitationService.preview`；在既有Job路由接入 POST `/jobs/{id}/cancel`、`JobService.cancel(actor:Actor,job_id:UUID,idempotency_key:str)->JobView`（入口核对最终2B已有取消签名后复用/窄扩展，不声称当前已存在），使用Task4/5原子chat收尾，幂等且限创建者。SSE只进度，最终答案从私有REST读取。`ChatRetention.sweep`扩展Message/ToolCall/receipt保留，不增加后台daemon。
 
-- [ ] **RED:** `test_chat_routes_history_not_context` 旧消息UI可见但新请求仅当前问题/本轮证据；跨用户/任一来源撤权/引用/SSE回放拒绝；cloud缺配置返回model_not_configured，本地搜索可用。`test_chat_retention_preserves_unknown_receipts`：90天/256MiB、200消息、100会话、ToolCall4×128KiB/24小时、费用4KiB/32MiB各边界；删除正文及时消除中间结果，不释放未知预占或擦掉请求身份，月汇总保留。前端 `test_scope_versions_citations_and_cache_revocation` 检验固定范围、每轮SHA、缺口、取消/断线、晚响应和退出缓存清除。
-- [ ] **Run RED:** backend `uv run --no-sync pytest tests/integration/test_chat_routes.py tests/integration/test_chat_flow.py tests/integration/test_chat_retention.py -q`；frontend `npm.cmd run test:e2e -- tests/private-chat.spec.ts tests/chat-flow.spec.ts`。
-- [ ] **Implement:** 输入框明确当前问题会发阿里云、历史/附件不自动回传，不诱导用户在聊天输入密钥。保留现有安全文本渲染，所有manifest/响应有界；页30/最多100，private/no-store，未知配置/预算/来源/推理忙错误均安全可解释。容量不足先清允许过期数据，仍不足拒新，不删未过期消息凑空间；run终态24小时清中间结果与checkpoint，最终message独立。清理Job分批100、幂等、权限/fence保护，不占本地模型槽。
-- [ ] **GREEN:** 聚焦pytest/Ruff、`uv lock --check`；前端typecheck/lint/build及上述Playwright；迁移/全第三阶段流程与已有授权/Job/Workspace回归按受影响范围一次完成。A方式整体审阅，记录确切命令/结果，不将计划勾选等同测试证据。
+- [x] **RED:** `test_chat_routes_history_not_context` 旧消息UI可见但新请求仅当前问题/本轮证据；跨用户/任一来源撤权/引用/SSE回放拒绝；cloud缺配置返回model_not_configured，本地搜索可用。`test_chat_retention_preserves_unknown_receipts`：90天/256MiB、200消息、100会话、ToolCall4×128KiB/24小时、费用4KiB/32MiB各边界；删除正文及时消除中间结果，不释放未知预占或擦掉请求身份，月汇总保留。前端 `test_scope_versions_citations_and_cache_revocation` 检验固定范围、每轮SHA、缺口、取消/断线、晚响应和退出缓存清除。
+- [x] **Run RED:** backend `uv run --no-sync pytest tests/integration/test_chat_routes.py tests/integration/test_chat_flow.py tests/integration/test_chat_retention.py -q`；frontend `npm.cmd run test:e2e -- tests/private-chat.spec.ts tests/chat-flow.spec.ts`。
+- [x] **Implement:** 输入框明确当前问题会发阿里云、历史/附件不自动回传，不诱导用户在聊天输入密钥。保留现有安全文本渲染，所有manifest/响应有界；页30/最多100，private/no-store，未知配置/预算/来源/推理忙错误均安全可解释。容量不足先清允许过期数据，仍不足拒新，不删未过期消息凑空间；run终态24小时清中间结果与checkpoint，最终message独立。清理Job分批100、幂等、权限/fence保护，不占本地模型槽。
+- [x] **GREEN:** 聚焦pytest/Ruff、`uv lock --check`；前端typecheck/lint/build及上述Playwright；迁移/全第三阶段流程与已有授权/Job/Workspace回归按受影响范围一次完成。A方式整体审阅，记录确切命令/结果，不将计划勾选等同测试证据。
 - [ ] **真实接入门槛（未执行）:** `test_chat_provider_live.py` 默认禁用，缺明确启用、已轮换本地凭据、正run/月预算、有效价格和专门受限合成请求时拒绝，不读取用户仓库。单独预算授权后验证一次Chat/tool协议往返、实际参数与usage/截断、请求体捕获安全性；记录仍不能证明供应商普遍遵约或最终账单绝对上限。真实Milvus/双本地模型/云/正式Linux全栈资源、备份恢复和真实私库质量分别标实际通过或NOT EXECUTED，不以mock/分时结果合并声称全栈通过。
-- [ ] **Commit/交付:** `test: verify private chat and phase three delivery`。提交仍受Git审批可用性约束；不推送/部署外部环境，不把第4–7阶段记为完成。
+- [x] **Commit/交付:** `test: verify private chat and phase three delivery`。提交仍受Git审批可用性约束；不推送/部署外部环境，不把第4–7阶段记为完成。
 
 ## 3C 交付契约（2026-11-05，供 3D 复用）
 

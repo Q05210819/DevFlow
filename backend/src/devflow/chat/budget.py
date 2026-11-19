@@ -155,25 +155,8 @@ class BudgetService:
         ):
             raise ValueError("limit must be between 1 and 1000")
         async with transaction(self.factory) as db:
-            await self._admit(db)
-            stale = (
-                select(RequestReceipt.id)
-                .join(AgentRun, AgentRun.id == RequestReceipt.run_id)
-                .where(
-                    RequestReceipt.status == "settled",
-                    AgentRun.terminal_at.is_not(None),
-                    RequestReceipt.settled_at
-                    <= text("clock_timestamp() - interval '90 days'"),
-                )
-                .order_by(RequestReceipt.settled_at)
-                .limit(limit)
-                .with_for_update(of=RequestReceipt, skip_locked=True)
-            )
-            ids = list(await db.scalars(stale))
-            if not ids:
-                return 0
-            await db.execute(delete(RequestReceipt).where(RequestReceipt.id.in_(ids)))
-        return len(ids)
+            count = await prune_settled_receipts(db, limit=limit)
+        return count
 
     async def _reserve(
         self, db, lease, run_id, ordinal, request_hash, parameter_version
@@ -649,10 +632,43 @@ class BudgetService:
             raise _invalid()
 
 
+async def prune_settled_receipts(session, *, limit: int) -> int:
+    """Delete settled terminal evidence past retention in the caller's txn.
+
+    Unknown or reserved receipts and monthly aggregates are never touched. The
+    budget advisory lock serializes this with reserve/settle, so a receipt that
+    becomes unknown concurrently can never be selected as settled.
+    """
+
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    await session.execute(
+        select(func.pg_advisory_xact_lock(func.hashtextextended(_BUDGET_LOCK, 0)))
+    )
+    stale = (
+        select(RequestReceipt.id)
+        .join(AgentRun, AgentRun.id == RequestReceipt.run_id)
+        .where(
+            RequestReceipt.status == "settled",
+            AgentRun.terminal_at.is_not(None),
+            RequestReceipt.settled_at <= text("clock_timestamp() - interval '90 days'"),
+        )
+        .order_by(RequestReceipt.settled_at)
+        .limit(limit)
+        .with_for_update(of=RequestReceipt, skip_locked=True)
+    )
+    ids = list(await session.scalars(stale))
+    if not ids:
+        return 0
+    await session.execute(delete(RequestReceipt).where(RequestReceipt.id.in_(ids)))
+    return len(ids)
+
+
 __all__ = [
     "ACCOUNTED_RECEIPT_BYTES",
     "MAX_RECEIPTS",
     "MAX_RECEIPT_BYTES",
     "RETENTION",
     "BudgetService",
+    "prune_settled_receipts",
 ]

@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 import time
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import httpx
@@ -23,10 +24,38 @@ from devflow.jobs.schemas import (
 )
 from devflow.logging import configure_logging, logger
 from devflow.repositories.policy import RepositoryPolicy
-from devflow.security import CredentialCipher
+from devflow.security import CredentialCipher, read_secret_file
 
 HEARTBEAT_SECONDS = 10
 ATTEMPT_SECONDS = 120
+
+
+@asynccontextmanager
+async def chat_provider(settings):
+    """Build the fixed cloud provider only when explicitly enabled.
+
+    A missing, unreadable or blank key file is not a Worker failure: the run
+    reaches ``model_not_configured`` and local retrieval stays available. The
+    provider is never constructed for the default cloud-off deployment.
+    """
+
+    if settings.chat_cloud_enabled is not True or settings.chat_api_key_file is None:
+        yield None
+        return
+    try:
+        key = read_secret_file(settings.chat_api_key_file).decode("utf-8")
+    except AppError:
+        yield None
+        return
+    from devflow.chat.provider import ChatProvider
+
+    async with httpx.AsyncClient() as client:
+        try:
+            provider = ChatProvider(key, client)
+        except AppError:
+            yield None
+            return
+        yield provider
 
 
 async def run_worker(
@@ -213,18 +242,19 @@ async def run_worker(
                 )
                 # Cloud chat stays disabled until it is explicitly configured
                 # and authorized; the graph then terminates model_not_configured.
-                await ChatRunHandler(
-                    ChatGraph(
+                async with chat_provider(settings) as provider:
+                    await ChatRunHandler(
+                        ChatGraph(
+                            factory,
+                            settings,
+                            retrieval=retrieval,
+                            citations=citations,
+                            budget=BudgetService(factory, settings),
+                            provider=provider,
+                        ),
                         factory,
-                        settings,
-                        retrieval=retrieval,
-                        citations=citations,
-                        budget=BudgetService(factory, settings),
-                        provider=None,
-                    ),
-                    factory,
-                    policy,
-                ).run(lease)
+                        policy,
+                    ).run(lease)
                 return None
             if kind in MODEL_JOB_KINDS:
                 from devflow.knowledge.handlers import MODEL_HANDLERS
@@ -243,6 +273,7 @@ async def run_worker(
 
         tokens = InstallationTokens(github)
         scheduler = SyncScheduler(factory, settings)
+        from devflow.chat.retention import ChatMaintenance
         from devflow.knowledge.retention import KnowledgeMaintenance
         from devflow.workspace.git import GitCache
         from devflow.workspace.process import GitRunner
@@ -266,6 +297,7 @@ async def run_worker(
             scheduler=scheduler,
             retention=retention,
             knowledge_maintenance=KnowledgeMaintenance(factory),
+            chat_maintenance=ChatMaintenance(factory),
             model_runtime=model_runtime,
             model_drain_timeout_seconds=settings.model_drain_timeout_seconds,
         )
@@ -293,6 +325,7 @@ async def _serve(
     scheduler=None,
     retention=None,
     knowledge_maintenance=None,
+    chat_maintenance=None,
     model_runtime=None,
     model_drain_timeout_seconds=None,
 ):
@@ -308,13 +341,17 @@ async def _serve(
                 if scheduler is not None:
                     await scheduler.tick()
                 if time.monotonic() >= next_maintenance and (
-                    retention is not None or knowledge_maintenance is not None
+                    retention is not None
+                    or knowledge_maintenance is not None
+                    or chat_maintenance is not None
                 ):
                     next_maintenance = time.monotonic() + 60
                     if retention is not None:
                         await retention.sweep()
                     if knowledge_maintenance is not None:
                         await knowledge_maintenance.tick()
+                    if chat_maintenance is not None:
+                        await chat_maintenance.tick()
                 # A model Worker never claims while its owner lock or models are
                 # unavailable. Ordinary Workers keep the exact old claim call so
                 # existing test doubles and admission semantics are preserved.

@@ -57,6 +57,24 @@ async def get_visible(
         raise AppError("service_unavailable", 503, "Service unavailable") from None
 
 
+@router.post(
+    "/jobs/{job_id}/cancel",
+    dependencies=[Depends(require_csrf)],
+)
+async def cancel_job(
+    job_id: UUID,
+    request: Request,
+    response: Response,
+    actor: Annotated[Actor, Depends(require_actor)],
+    idempotency_key: Annotated[IdempotencyKey, Header(alias="Idempotency-Key")],
+) -> JobView:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return await get_job_service(request).cancel(actor, job_id, idempotency_key)
+    except SQLAlchemyError:
+        raise AppError("service_unavailable", 503, "Service unavailable") from None
+
+
 @router.get("/jobs/{job_id}/events")
 async def stream_events(
     job_id: UUID,
