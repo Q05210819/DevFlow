@@ -256,15 +256,32 @@
 - 界面：会话列表创建会话（固定 1–3 仓库）、会话页展示范围、目标/旧 active SHA、每轮引用 SHA、进度、缺口提示、引用预览、取消和二次确认删除；撤权后清除会话与引用缓存并隐藏私有正文；退出登录沿用既有全局 query 清理。
 - 云配置：新增 `tests/test_worker_chat_provider.py` 证明默认无 provider、缺失/空白密钥文件保持关闭、完整配置才构造固定适配器；`test_chat_provider_live.py` 默认跳过，要求显式开关、轮换密钥、完整正预算/价格表和一次合成请求。
 
-### 整套后端回归（一次运行，未全绿）
+### 整套后端回归（2026-11-24 修复既有失败）
 
-`uv run --no-sync pytest tests/ -m "not live_github and not live_chat" -q`：**1278 passed / 5 failed / 13 skipped / 1 deselected in 1146.51s**。5 个失败均属既有 Workspace/迁移断言，与本轮聊天改动无调用关系：
+基线提交 `8ff6d9b` 上记录过一次整套运行：**1278 passed / 5 failed / 13 skipped / 1 deselected in 1146.51s**。5 个失败均为既有 Workspace/迁移断言，与聊天改动无调用关系。2026-11-24 在分支 `fix/legacy-test-failures` 上逐项定位并修复其中 4 项；第 5 项未能复现，标记 **NOT FIXED**。全过程没有跳过用例、放宽断言、删除测试或加入重试/sleep。
 
-- `test_workspace_prepare.py::test_workspace_downgrade_preserves_immutable_provenance` 单独运行也失败：仍期望 `alembic_version == 0009_workspace`，而实际 head 已是 `0020_chat_retention`；
-- `test_workspace_retention.py` 3 项原生进程用例单独运行也失败：Windows 上 PID/守卫身份不一致（例如记录 pid 2264 而当前进程 27304）；
-- `test_workspace_prepare.py::test_another_authorized_member_reads_ready_snapshot_after_creator_disabled` 只在整套运行中出现，单独重跑两次均通过，属于既有整包级不稳定，未定位为聊天改动引起。
+| 用例 | 根因 | 修复 | 复跑 |
+| --- | --- | --- | --- |
+| `test_workspace_prepare.py::test_workspace_downgrade_preserves_immutable_provenance` | 测试假设过时：硬编码 `alembic_version == "0009_workspace"`，而 `alembic heads` 已是 `0020_chat_retention`。被阻止的 downgrade 契约是停在实际 head，而不是停在引入 provenance 的版本 | 改为与 `ScriptDirectory.from_config(config).get_current_head()` 比较（`test_migrations.py` 已有的动态 head 模式）；provenance 不变的断言保留 | 通过 |
+| `test_workspace_retention.py` 3 项原生进程用例：`test_native_bootstrap_budget_frame_preserves_exact_protocol`、`test_native_closed_frame_preserves_proof_and_unknown_slot[True/False]` | 测试假设过时（Windows 启动器差异），产品行为正确：`uv run` 下 `sys.executable` 是 `.venv\Scripts\python.exe` launcher，它把真实解释器作为子进程启动。实测 `Popen.pid = 32284`、子进程 `getpid() = 23508`、`equal = False`；而 guard identity 由 supervisor 上报自身 pid | supervisor 在 ready 帧附带 `pid: os.getpid()`；`_Operation` 保存为 `native_pid`；`assert_native_identity` 改为比较 `identity["pid"] == operation.native_pid` 并断言 `native_pid` 非空。断言强度不变，仍验证“记录 pid 等于实际持有 Job/锁的解释器” | 通过 |
+| `test_workspace_prepare.py::test_another_authorized_member_reads_ready_snapshot_after_creator_disabled` | **NOT FIXED（未定位）**：无法复现，原始失败未留 traceback | 未修改该用例 | 单独运行 14/14 次通过（2.0–5.3s） |
 
-没有修改这些用例、放宽断言或把它们记为通过；它们仍需在独立任务中处理。本节的聊天结论不依赖这些失败项。
+第 5 项的复现工作与证据：
+
+- 单独运行 14 次全部通过；`test_workspace_prepare.py` 全模块在修复第 1 项前只有第 1 项失败，其余通过；
+- 完整命令 `uv run --no-sync pytest tests/ -m "not live_github and not live_chat" -q`：**1283 passed / 0 failed / 13 skipped / 1 deselected in 1310.09s (0:21:50)**（2026-11-24 一次运行）；
+- 找到的原始运行记录中没有该失败的 traceback（`backend/.pytest_cache/v/cache/lastfailed` 为空，相关终端历史已清空），无法指认具体失败行，因此不宣称已修复。
+
+该用例在每个测试独立 schema、合成 GitHub transport 和固定 SHA 下运行；外部输入中唯一与顺序/时间相关的是 Job lease 30s、guard deadline 10s、测试辅助函数 1.5s 的 drain 清理窗口（生产允许到 deadline+2s）与权限缓存 TTL 60s。整套负载下 supervisor 启动变慢、超出 1.5s 窗口是可能解释之一，但没有 traceback 佐证，不作为已证实根因，也未调整该值（避免以延长超时掩盖问题）。若再次出现，应按上述时间点抓取完整 traceback 再处理。
+
+复跑命令与结果（均在 `backend/` 下执行）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `uv run --no-sync pytest -q tests/integration/test_workspace_prepare.py::test_workspace_downgrade_preserves_immutable_provenance tests/integration/test_workspace_retention.py::test_native_bootstrap_budget_frame_preserves_exact_protocol "tests/integration/test_workspace_retention.py::test_native_closed_frame_preserves_proof_and_unknown_slot[True]" "tests/integration/test_workspace_retention.py::test_native_closed_frame_preserves_proof_and_unknown_slot[False]"` | 4 passed in 8.92s |
+| `uv run --no-sync pytest -q tests/integration/test_workspace_prepare.py tests/integration/test_workspace_flow.py` | 35 passed in 83.92s |
+| `uv run --no-sync pytest tests/ -m "not live_github and not live_chat" -q` | 1283 passed, 13 skipped, 1 deselected in 1310.09s |
+| `uv run --no-sync ruff check .` / `uv run --no-sync ruff format --check .` | All checks passed / 252 files already formatted |
 
 ### 未执行项（NOT EXECUTED）
 
@@ -272,5 +289,5 @@
 - 真实 Milvus、真实 bge-m3/bge-reranker 推理与双模型并发；聊天用例使用确定性假推理与假索引。
 - `chat-flow.spec.ts` 与 `private-chat.spec.ts` 是受控路由的浏览器用例（真实页面、Query、SSE 与缓存逻辑），不是真实 API/Worker 全栈联调；没有新增聊天专用的真实栈 Playwright 场景。
 - Docker 镜像构建、Compose `config`/启动、Linux 卷权限、强杀恢复、备份恢复与正式部署。
-- 完整后端测试集未在本轮重跑；上述聚焦与回归结果不能表述为整套后端或正式验收通过。
+- 聊天轮次未重跑完整后端测试集；2026-11-24 的既有失败修复轮已重跑并全绿（见上方“整套后端回归”小节），但上述聊天聚焦结果仍不能替代正式验收。
 - Git 提交/合并按既有审批限制执行。

@@ -62,7 +62,12 @@ async def claim(env):
 
 
 def assert_native_identity(identity, operation):
-    assert identity["pid"] == operation.process.pid
+    # The guard records the identity of the supervisor interpreter that holds the
+    # job/lock. On Windows ``Popen.pid`` is the venv launcher, which may spawn the
+    # real interpreter as a child, so compare against the pid the supervisor
+    # reported instead.
+    assert operation.native_pid is not None
+    assert identity["pid"] == operation.native_pid
     if os.name == "nt":
         assert identity["platform"] == "windows"
         assert identity["job"] == "Local\\DevFlow-" + operation.guard.operation_id

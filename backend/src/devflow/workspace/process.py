@@ -293,6 +293,10 @@ class _Operation:
         self.runner, self.guard = runner, guard
         self.deadline, self.cancel = deadline, cancel
         self.process = None
+        # The OS process id of the supervisor interpreter itself. On Windows a
+        # venv launcher may spawn the real interpreter as a child, so this can
+        # differ from ``self.process.pid``.
+        self.native_pid = None
         self.messages = queue.Queue(maxsize=2)
         self.ended = threading.Event()
         self.active = False
@@ -334,6 +338,7 @@ class _Operation:
             # After sending activation, loss of its reply is ambiguous.
             self.active = True
             result = self.receive(self.cancel)
+            self.native_pid = result.get("pid") or self.process.pid
             self.active = result.get("active", True)
             self.drained = result.get("drained", False)
             if result.get("status") != "ready":
@@ -862,7 +867,10 @@ def _supervisor_main(
             if reason:
                 raise WorkspaceProcessError(reason)
             time.sleep(0.01)
-        _write_frame(sys.stdout.buffer, {"status": "ready", "active": True})
+        _write_frame(
+            sys.stdout.buffer,
+            {"status": "ready", "active": True, "pid": os.getpid()},
+        )
         while not _reason(stopped, deadline):
             try:
                 request = messages.get(timeout=0.02)

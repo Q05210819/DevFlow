@@ -413,6 +413,7 @@ async def test_workspace_downgrade_preserves_immutable_provenance(
     workspace_env, migrated_database
 ):
     from alembic import command
+    from alembic.script import ScriptDirectory
 
     from devflow.workspace.models import WorkspaceVersion
 
@@ -422,9 +423,12 @@ async def test_workspace_downgrade_preserves_immutable_provenance(
         command.downgrade(migrated_database[1], "0008_sync_repair")
     async with env.factory() as db:
         assert (await db.get(WorkspaceVersion, view.id)).commit_sha == SHA
+        # The blocked downgrade must leave the schema at the current head, not at
+        # the migration that introduced workspace provenance.
+        actual = await db.scalar(text("SELECT version_num FROM alembic_version"))
         assert (
-            await db.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0009_workspace"
+            actual
+            == ScriptDirectory.from_config(migrated_database[1]).get_current_head()
         )
 
 
