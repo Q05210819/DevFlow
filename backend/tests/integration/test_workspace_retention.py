@@ -452,8 +452,18 @@ async def test_drain_to_publish_gap_keeps_exact_attempt_pin(prepare_env, monkeyp
 
     monkeypatch.setattr(env.workspace, "publish", paused)
     work = asyncio.create_task(env.workspace.prepare(lease))
-    await asyncio.wait_for(arrived.wait(), 10)
+    waiter = asyncio.create_task(arrived.wait())
+    surfaced = False
     try:
+        # Preparation carries its own 600s deadline, so wait on the work itself
+        # rather than on a test-local clock: a loaded machine must not turn a
+        # failure into a bare timeout that hides the error, and a slow machine
+        # must not fail a test that asserts nothing about wall-clock speed.
+        await asyncio.wait({waiter, work}, return_when=asyncio.FIRST_COMPLETED)
+        if not arrived.is_set():
+            surfaced = True
+            await work  # a failed preparation raises here, not as TimeoutError
+            raise AssertionError("preparation returned without publishing")
         result = await retention(env).sweep()
         assert (result.evicted, result.orphans, result.deferred) == (0, 0, 0)
         async with env.factory() as db:
@@ -470,8 +480,10 @@ async def test_drain_to_publish_gap_keeps_exact_attempt_pin(prepare_env, monkeyp
             / f"refs/devflow/pins/{guard.operation_id}"
         ).exists()
     finally:
+        waiter.cancel()
         release.set()
-        await work
+        if not surfaced:
+            await work
     assert (
         await env.workspace.get(env.actor, view.repository_id, view.id)
     ).status == "ready"
