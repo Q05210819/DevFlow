@@ -24,14 +24,10 @@ gateway (Caddy)
    └─ 其他路径 ──────────────► frontend (Next.js, :3000)
                                    │ 同源请求 /api/v1/*
                                    ▼
-                              api ───────────► PostgreSQL 17
-                                   │ Job 入队 / 租约
-                                   ▼
-                              worker (devflow.worker) ──► GitHub API / 本地 bare Git 缓存
-                                   │ 模型类 Job
-                                   ▼
-                              model-worker ──► 本地 embedding / rerank 模型
-                                   └──────────► Milvus standalone (etcd + MinIO)
+                              api ───────────► PostgreSQL 17（Job 队列 / 租约）
+                                   ├──► worker (devflow.worker) ──► GitHub API / 本地 bare Git 缓存
+                                   └──► model-worker（模型类 Job）──► 本地 embedding / rerank 模型
+                                                └──────────────────► Milvus standalone (etcd + MinIO)
 ```
 
 | 目录 | 职责 |
@@ -82,7 +78,7 @@ Compose 要求以下变量非空（`compose.yaml` 中使用 `${VAR:?}` 强制校
 | `GITHUB_ALLOWED_INSTALLATION_IDS` | 允许的 installation ID，JSON 数组，例如 `[1]`。 |
 | `DEVFLOW_SECRETS_DIR` | 存放 secret 文件的绝对目录，不能放在仓库内。 |
 
-`.env.example` 中的值均为占位符，必须替换；不要提交真实密钥。`APP_ENV` 在 Compose 的 production 服务中固定为 `production`，开发覆盖文件改为 `development`。
+`.env.example` 中的凭据类值均为占位符，必须替换；`PUBLIC_BASE_URL` 需按部署环境修改（生产为真实 HTTPS origin）。不要提交真实密钥。`APP_ENV` 在 Compose 的 production 服务中固定为 `production`，开发覆盖文件改为 `development`。
 
 **Secret 文件**：完整栈需要 `DEVFLOW_SECRETS_DIR` 下的九个文件，每个文件的内容就是密钥本身：
 
@@ -110,6 +106,8 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml u
 docker compose --env-file .env -f infra/compose.yaml up -d --build
 ```
 
+生产 Compose 同样会启动 `model-worker`（该服务在生产文件中没有 profile），因此需要先准备模型目录并显式设置 `MODEL_DEVICE` / `MODEL_DTYPE`，否则该容器启动即失败。
+
 开发栈默认不启动 Milvus 三件套；需要知识库检索时追加 `--profile milvus`，再需要本地模型 worker 时追加 `--profile models`：
 
 ```bash
@@ -117,7 +115,7 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml \
   --profile milvus --profile models up -d --build
 ```
 
-`model-worker` 还需要设置 `DEVFLOW_MODEL_DIR`（宿主机绝对目录）、`MODEL_DEVICE`、`MODEL_DTYPE`，并保证模型文件对容器内 UID `10001` 可读。启用云端对话时，将 `infra/chat.env.example` 复制为 `infra/chat.env` 并填写完整价格表。
+`model-worker` 还需要设置 `DEVFLOW_MODEL_DIR`（宿主机绝对目录）、`MODEL_DEVICE`、`MODEL_DTYPE`，并保证模型文件对容器内 UID `10001` 可读。启用云端对话时，将 `infra/chat.env.example` 复制为 `infra/chat.env` 并填写完整价格表（也可用 `DEVFLOW_CHAT_ENV_FILE` 指向其他路径）。
 
 ### 4. 方式二：本地开发
 
@@ -159,7 +157,7 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml \
    npm --prefix frontend run dev
    ```
 
-   浏览器打开 `http://127.0.0.1:3000`。开发模式下 Next.js 将 `/api/:path*` rewrite 到 `DEVFLOW_API_ORIGIN`（未设置时默认 `http://127.0.0.1:8000`）。该变量未在 `.env.example` 中列出，仅用于本地开发/测试。
+   浏览器打开 `http://127.0.0.1:3000`。开发模式下 Next.js 将 `/api/:path*` rewrite 到 `DEVFLOW_API_ORIGIN`（未设置时默认 `http://127.0.0.1:8000`）。该变量仅对本地开发/测试生效，已作为注释项列在 `.env.example` 中。
 
 ### 5. 访问地址与端口
 
@@ -190,23 +188,23 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml \
 | 后端依赖 | `uv --directory backend sync --locked` |
 | 后端 lint | `uv --directory backend run --no-sync ruff check .` |
 | 后端格式检查 | `uv --directory backend run --no-sync ruff format --check .` |
-| 后端测试（CI 使用） | `uv --directory backend run --no-sync pytest -q -m 'not live_github'` |
+| 后端测试（CI 使用） | `uv --directory backend run --no-sync pytest -q -m 'not live_github and not live_chat'` |
 | 数据库迁移 | `uv --directory backend run --env-file ../.env --no-sync alembic upgrade head` |
 | 启动 Worker | `uv --directory backend run --env-file ../.env --no-sync python -m devflow.worker` |
 | 前端依赖 | `npm --prefix frontend ci` |
 | 前端开发 | `npm --prefix frontend run dev` |
-| 前端构建 / 启动 | `npm --prefix frontend run build` / `npm --prefix frontend run start` |
+| 前端构建 | `npm --prefix frontend run build`（standalone 输出，容器内由 `node server.js` 启动） |
 | 前端类型检查 | `npm --prefix frontend run typecheck` |
 | 前端 lint | `npm --prefix frontend run lint` |
 | 前端 E2E | `npm --prefix frontend run test:e2e` |
 | Compose 配置校验 | `docker compose --env-file .env -f infra/compose.yaml config --quiet` |
 | 构建镜像 | `docker compose --env-file .env -f infra/compose.yaml build api frontend gateway` |
 
-> 注意：当前仓库快照未包含 `backend/tests/` 与 `frontend/tests/`，上述 pytest / Playwright 命令与 CI 配置保持一致，但在补回测试目录前不会实际执行用例。
+> 注意：当前仓库快照未包含 `backend/tests/` 与 `frontend/tests/`。CI 检测到对应目录缺失时会跳过 pytest / Playwright 并输出 `::notice`，目录补回后自动恢复执行；本地运行上述测试命令同样需要测试目录存在。`live_github` 与 `live_chat` 标记的用例会访问真实 GitHub 或消耗云端预算，因此在 CI 中始终排除。
 
 ## 配置项说明
 
-以下变量均来自 `.env.example` 与 `backend/src/devflow/config.py`；除特别说明外都可省略并使用默认值。
+以下变量的默认值与校验来自 `backend/src/devflow/config.py`（应用进程），或来自 `infra/compose.yaml` 与前端配置；仅由 Compose 或前端读取的变量在说明中单独标注。
 
 ### 基础与安全
 
@@ -218,6 +216,7 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml \
 | `BOOTSTRAP_ADMIN_GITHUB_ID` | production 必填 | 首个管理员 GitHub 数字 ID | 无 |
 | `DEVFLOW_SECRETS_DIR` | Compose 必填 | secret 文件所在绝对目录 | 无 |
 | `DEVFLOW_IMAGE_TAG` | 否 | Compose 构建镜像 tag | `local` |
+| `DEVFLOW_API_ORIGIN` | 否 | 前端开发服务器 rewrite `/api/:path*` 的目标；仅 `NODE_ENV=development` 生效 | `http://127.0.0.1:8000` |
 | `OAUTH_STATE_TTL_SECONDS` | 否 | OAuth state 有效期 | `600` |
 | `SESSION_TTL_SECONDS` | 否 | 会话有效期 | `28800` |
 | `PERMISSION_CACHE_TTL_SECONDS` | 否 | 权限缓存时间 | `60` |
@@ -258,7 +257,7 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml \
 
 | 变量 | 必填 | 说明 | 默认值 |
 | --- | --- | --- | --- |
-| `DEVFLOW_MODEL_DIR` | 使用 model profile 时必填 | 宿主机模型目录，只读挂载到容器 `/models` | Compose 默认 `./.models` |
+| `DEVFLOW_MODEL_DIR` | model worker 必填 | 宿主机模型目录，只读挂载到容器 `/models` | Compose `./.models`（相对 `infra/`） |
 | `MODEL_EMBEDDING_PATH` | model worker 必填 | 容器内 embedding 模型绝对路径 | Compose `/models/bge-m3` |
 | `MODEL_RERANKER_PATH` | model worker 必填 | 容器内 reranker 模型绝对路径 | Compose `/models/bge-reranker-v2-m3` |
 | `KNOWLEDGE_TOKENIZER_PATH` | 导入知识时必填 | 容器内 tokenizer 目录绝对路径 | Compose `/models/bge-m3` |
@@ -274,6 +273,7 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml \
 | 变量 | 必填 | 说明 | 默认值 |
 | --- | --- | --- | --- |
 | `CHAT_CLOUD_ENABLED` | 否 | 是否允许云端模型调用 | `false` |
+| `DEVFLOW_CHAT_ENV_FILE` | 否 | Compose `model-worker` 读取的 chat env 文件；相对路径按 `infra/` 解析 | `./chat.env` |
 | `CHAT_API_KEY_FILE` | 启用时必填 | 云端模型 key 文件路径（Compose 挂载 `/run/devflow-secrets`） | 无 |
 | `CHAT_BUDGET_CURRENCY` | 启用时必填 | ISO 4217 货币代码 | 无 |
 | `CHAT_RUN_BUDGET` | 启用时必填 | 单次运行预算 | 无 |
@@ -291,8 +291,8 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml \
 - **CI**：`.github/workflows/ci.yml`，在 `push`、`pull_request`、`workflow_dispatch` 时触发，运行于 `ubuntu-24.04`，超时 30 分钟。使用 PostgreSQL `17.11` service（宿主机端口 `55439`）。
 - **CI 步骤**：
   1. 校验锁定的 backend / frontend 依赖（`uv sync --locked`、`npm ci`）。
-  2. 后端 `ruff check`、`ruff format --check`、`pytest -q -m 'not live_github'`。
-  3. 前端 `typecheck`、`lint`、`build`，安装 Playwright Chromium 并执行 E2E。
+  2. 后端 `ruff check`、`ruff format --check`；`backend/tests/` 存在时运行 `pytest -q -m 'not live_github and not live_chat'`，否则跳过并输出 `::notice`。
+  3. 前端 `typecheck`、`lint`、`build`；`frontend/tests/` 存在时安装 Playwright Chromium 并执行 E2E，否则跳过并输出 `::notice`。
   4. 生成合成的 secret 文件（仅用于打包验证，不是真实凭据）。
   5. 校验生产与开发两份 Compose 配置，构建 `api`、`frontend`、`gateway` 镜像，并断言容器以非 root 运行且包含预期文件。
 - **镜像**：
@@ -310,5 +310,5 @@ docker compose --env-file .env -f infra/compose.yaml -f infra/compose.dev.yaml \
 - **模型 worker 是单实例角色**：通过本地 owner lock 保证同一时间只有一个进程加载模型；不要横向扩容 `model-worker`。`MODEL_DEVICE` / `MODEL_DTYPE` 必须显式选择，Compose 传入空值会直接启动失败，不会静默回退到 CPU。
 - **云端对话默认关闭**：开启需要完整的价格表、预算、有效密钥文件，并单独部署 LangGraph checkpoint schema；模型与调用地址固定在代码中。
 - **Milvus 的启动策略不同**：生产 Compose 始终启动 Milvus 三件套；开发栈需要显式加 `--profile milvus`（本地模型再加 `--profile models`）。
-- **当前快照不含测试与文档**：仓库中没有 `backend/tests/`、`frontend/tests/` 与 `docs/`；CI 命令仍引用测试目录，补回后可恢复执行。仓库也未包含 LICENSE 文件。
+- **当前快照不含测试与文档**：仓库中没有 `backend/tests/`、`frontend/tests/` 与 `docs/`；CI 在测试目录缺失时跳过 pytest 与 Playwright 并输出 `::notice`，目录补回后自动恢复执行。仓库也未包含 LICENSE 文件。
 - **本地文件系统假设**：工作区缓存与模型 owner lock 都是本地路径；当前 Compose 编排面向单机部署（或具备共享卷语义的单组主机）。Windows 主机进程使用 `asyncio.SelectorEventLoop`（psycopg 要求），示例命令已包含 `--loop asyncio:SelectorEventLoop`。

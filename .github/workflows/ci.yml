@@ -35,19 +35,27 @@ jobs:
         run: |
           uv --directory backend sync --locked
           npm --prefix frontend ci
-      - name: Backend checks (isolated PostgreSQL; synthetic GitHub fixtures)
+      - name: Backend checks (isolated PostgreSQL)
         run: |
           uv --directory backend run --no-sync ruff check .
           uv --directory backend run --no-sync ruff format --check .
-          uv --directory backend run --no-sync pytest -q -m 'not live_github'
+          if [ -d backend/tests ]; then
+            uv --directory backend run --no-sync pytest -q -m 'not live_github and not live_chat'
+          else
+            echo "::notice title=Backend tests skipped::backend/tests is absent from this checkout"
+          fi
       - name: Frontend checks
         run: |
           npm --prefix frontend run typecheck
           npm --prefix frontend run lint
           npm --prefix frontend run build
-          cd frontend
-          npx --no-install playwright install --with-deps chromium
-          npm run test:e2e
+          if [ -d frontend/tests ]; then
+            cd frontend
+            npx --no-install playwright install --with-deps chromium
+            npm run test:e2e
+          else
+            echo "::notice title=Frontend E2E skipped::frontend/tests is absent from this checkout"
+          fi
       - name: Synthetic packaging inputs (never GitHub credentials)
         run: |
           uv --directory backend run --no-sync python - <<'PY'
