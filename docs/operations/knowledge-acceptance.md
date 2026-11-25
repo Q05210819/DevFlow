@@ -299,6 +299,41 @@
 
 同一时段还有一次模块级诊断运行出现 `test_fork_source_revocation_hides_head_but_preserves_base_and_list` 失败：`list(limit=1)` 返回了 1 个本应为空的条目（0.887s，完整 traceback 已留）。同顺序重跑 62 passed、该用例隔离 5/5 通过，未复现，也未定位到条目来源，因此同样未改用例。另有两次尝试未计入轮次：一次被宿主机内存回收终止（只留下 `test_workspace_flow.py` 的失败标记、无 traceback），一次带 `-o faulthandler_timeout=9` 诊断参数运行以 Windows access violation 崩溃（不带该参数的完整轮次均未崩溃）。
 
+#### retention 10s 看门狗：根因与修复（2026-11-25，提交 `0b32181`）
+
+**结论：测试基础设施问题，不是产品缺陷。** 产品侧不存在 ~10s 边界：`handlers.prepare` 的 deadline 是 600s（`asyncio.timeout_at`），`CLEANUP_SECONDS = 2.0`，supervisor 消息轮询 0.02s、drain 轮询 0.01s；10s 只出现在该测试自己的一行 `asyncio.wait_for(arrived.wait(), 10)` 里。
+
+余量实测（仓库外证据目录 `C:\Users\Q\AppData\Local\Temp\devflow-flake-20261125\`，原始整套日志在 `...\devflow-suite-runs\`）：
+
+| 条件 | call 耗时 | 距 10s 余量 |
+| --- | --- | --- |
+| 空载，5 轮 | 1.56 / 1.61 / 1.56 / 1.60 / 1.65s | 8.35–8.44s（约 6×） |
+| 8 线程 CPU 竞争，3 轮 | 1.57 / 1.68 / 2.18s | ≥ 7.8s |
+| 16 线程饱和，成功的一轮 | 7.14s | 2.86s（1.4×） |
+| 16 线程饱和，失败轮 | 11.46–12.61s | 负 |
+| 原始 run-2 失败 | 12.373s | 负 |
+
+原始失败（`devflow-suite-runs\failures.log`，2026-11-24T17:42:04，duration=12.373s）的线程栈停在 `workspace\git.py:109 operation` → `workspace\process.py:262 session.start` → `:340 receive` → `:370 messages.get`，即准备仍在等 supervisor 的 ready 帧，没有任何异常——是跑得慢，不是跑错。另一方面，16 核饱和下把同一条用例稳定压失败（procs 5/5、threads 2/3、禁用沙箱 3/3）时，`probe2` 记录到 `service.prepare` 在 2.95–3.92s 就以 `AppError code='git_failed'` 结束，而测试仍消耗满 10s 报 TimeoutError：等待条件只能观察 `arrived`，无法区分“慢”和“失败”。
+
+**改动**（`backend/tests/integration/test_workspace_retention.py`）：等待改为 `await asyncio.wait({arrived_waiter, work}, return_when=asyncio.FIRST_COMPLETED)`；若准备先结束则 `await work`，让真实错误直接抛出；`finally` 内取消 waiter、置位 `release`、按需 `await work`（原代码看门狗在 try/finally 之外，超时时 `release` 不会置位、`work` 不会 await，因而泄漏 `Task exception was never retrieved`）。等待由准备自身的 600s deadline 兜底，不再有测试自设的墙钟；没有 sleep、重试、放宽断言或跳过用例。
+
+验证（`backend/` 下执行，耗时取自 pytest `--durations`）：
+
+| 命令/场景 | 结果 |
+| --- | --- |
+| 诊断：把 `WorkspaceService.prepare` 人为延后 11s（> 旧 10s），旧代码 | 1 failed，`TimeoutError`，call=10.17s |
+| 同上，新代码 | 1 passed，call=12.73s（全部原断言照常执行） |
+| 目标用例空载 5 轮 | 5 passed，call=1.56–1.65s |
+| 16 线程饱和 2 轮 | 2 failed，但均为 3.71s / 4.65s 的 `AppError: Workspace preparation unavailable`（handlers.py:170），无超时、无泄漏告警 |
+| `pytest tests/integration/test_workspace_retention.py -q` | 29 passed in 98.69s |
+| `pytest tests/integration/test_workspace_retention.py tests/integration/test_workspace_retention_history.py -q` | 39 passed / 1 failed in 121.03s（失败见下）；`test_workspace_prepare.py` 33 passed in 35.53s |
+| `ruff check` / `ruff format --check`（该文件） | All checks passed / already formatted |
+
+**剩余风险与未解释项**：
+
+- 16 核饱和下 supervisor 内的 `Job.spawn` → `CreateProcessW` 以 `WinError 5`（`windows.py:273`，`_check` 报 `native_containment_failed`）失败，被 `_run_tree` 归为 `spawn_failed`。该错误在用例路径上可稳定复现，但把同一套 `Job` + handle list + 16 线程 zlib 负载搬到独立脚本（`spawn_probe.py`，30 轮）却 0 失败，说明它不是“负载下 CreateProcessW 的普遍行为”，触发条件尚未隔离；已排除 Claude Code 沙箱 job（禁用沙箱仍 3/3 失败）与单纯进程数量（单进程 16 线程同样失败）。本次未改产品代码。
+- 同环境实测 Postgres 容器时钟比宿主机慢约 1.8s（`clock_timestamp()` 对照 `time.time()`：-1.78 ~ -1.82s）。模块复跑时 `test_residual_bytes_block_fetch_admission[True]` 曾以 `claim returned None; ... available_at 比服务器 clock_timestamp() 晚 4s` 失败一次；该用例隔离 3/3 通过、模块重跑 29 passed，判断为该时钟漂移下的既有隐患，与本次改动无关，未修改。
+
 ### 未执行项（NOT EXECUTED）
 
 - 真实 DashScope/Qwen 调用、真实 usage/截断/参数兼容性与账单对账；live 用例未运行。
