@@ -295,7 +295,7 @@
 | 2 | 1 failed / 1282 passed / 13 skipped / 1 deselected in 1372.56s (0:22:52) | 失败为 `test_workspace_retention.py::test_drain_to_publish_gap_keeps_exact_attempt_pin`，与第 5 项无关；完整 traceback 已留存 |
 | 3 | 1283 passed / 0 failed / 13 skipped / 1 deselected in 1190.92s (0:19:50) | 第 5 项通过 |
 
-结论：第 5 项在三轮整套回归中均未复现，状态维持 **NOT FIXED**；没有可指认的失败行，因此不做推测性修改。但整套并非稳定全绿：第 2 轮的失败点是 `prepare_env` 的 10s 测试看门狗——`await asyncio.wait_for(arrived.wait(), 10)` 在 `prepare()` 到达 `publish` 之前超时，traceback 只能说明该 10s 内未走到 `publish`，无法区分慢在哪一步。另行进行的 `faulthandler_timeout=9` 诊断运行在 `test_workspace_flow` 测到超过 9s 的等待，线程栈停在原生 supervisor 的 fetch 往返（`workspace/git.py` 的 `_run` → `workspace/process.py` 的 `receive`/`queue.get`），说明整套负载下 supervisor 往返确实可能超过 10s；生产 deadline 是 600s，10s 是测试自设窗口。按 retention→prepare 顺序重跑两个模块为 62 passed，未再复现，因此没有证据指认产品缺陷；未改代码或断言，也未加 sleep/重试。
+结论：第 5 项在三轮整套回归中均未复现，状态维持 **NOT FIXED**；没有可指认的失败行，因此不做推测性修改。但整套并非稳定全绿：第 2 轮的失败点是 `prepare_env` 的 10s 测试看门狗——`await asyncio.wait_for(arrived.wait(), 10)` 在 `prepare()` 到达 `publish` 之前超时，traceback 只能说明该 10s 内未走到 `publish`，无法区分慢在哪一步。另行进行的 `faulthandler_timeout=9` 诊断运行在 `test_workspace_flow` 测到超过 9s 的等待，线程栈停在原生 supervisor 的 fetch 往返（`workspace/git.py` 的 `_run` → `workspace/process.py` 的 `receive`/`queue.get`），说明整套负载下 supervisor 往返确实可能超过 10s；生产 deadline 是 600s，10s 是测试自设窗口。按 retention→prepare 顺序重跑两个模块为 62 passed，未再复现，因此没有证据指认产品缺陷；未改代码或断言，也未加 sleep/重试。第 5 项在 2026-11-25 的最终整套回归（HEAD `086b62f`）中仍未复现；该轮另有一次与本项无关的 claim 失败（测试库时钟倒跳），见下方“最终整套回归”。
 
 同一时段还有一次模块级诊断运行出现 `test_fork_source_revocation_hides_head_but_preserves_base_and_list` 失败：`list(limit=1)` 返回了 1 个本应为空的条目（0.887s，完整 traceback 已留）。同顺序重跑 62 passed、该用例隔离 5/5 通过，未复现，也未定位到条目来源，因此同样未改用例。另有两次尝试未计入轮次：一次被宿主机内存回收终止（只留下 `test_workspace_flow.py` 的失败标记、无 traceback），一次带 `-o faulthandler_timeout=9` 诊断参数运行以 Windows access violation 崩溃（不带该参数的完整轮次均未崩溃）。
 
@@ -333,6 +333,38 @@
 
 - 16 核饱和下 supervisor 内的 `Job.spawn` → `CreateProcessW` 以 `WinError 5`（`windows.py:273`，`_check` 报 `native_containment_failed`）失败，被 `_run_tree` 归为 `spawn_failed`。该错误在用例路径上可稳定复现，但把同一套 `Job` + handle list + 16 线程 zlib 负载搬到独立脚本（`spawn_probe.py`，30 轮）却 0 失败，说明它不是“负载下 CreateProcessW 的普遍行为”，触发条件尚未隔离；已排除 Claude Code 沙箱 job（禁用沙箱仍 3/3 失败）与单纯进程数量（单进程 16 线程同样失败）。本次未改产品代码。
 - 同环境实测 Postgres 容器时钟比宿主机慢约 1.8s（`clock_timestamp()` 对照 `time.time()`：-1.78 ~ -1.82s）。模块复跑时 `test_residual_bytes_block_fetch_admission[True]` 曾以 `claim returned None; ... available_at 比服务器 clock_timestamp() 晚 4s` 失败一次；该用例隔离 3/3 通过、模块重跑 29 passed，判断为该时钟漂移下的既有隐患，与本次改动无关，未修改。
+
+#### 最终整套回归（2026-11-25，HEAD `086b62f`）
+
+在 `fix/legacy-test-failures` 的 HEAD `086b62f`（含 `0b32181` 与上方记录）上做收尾确认；命令与前三轮相同，原始日志留在仓库外：
+
+`uv run --no-sync pytest tests/ -m "not live_github and not live_chat" --tb=long -rf`
+
+| 项目 | 结果 |
+| --- | --- |
+| 收集/选择 | 1297 collected / 1 deselected by marker → 1296 selected |
+| 计数 | **1282 passed / 1 failed / 13 skipped / 0 error** |
+| 耗时 | 940.38s (0:15:40) |
+| 日志 | `.test-runs/final-full.log`（未跟踪，不入库、不提交） |
+
+唯一失败为 `test_workspace_prepare.py::test_activation_rechecks_lease_after_workspace_lock_wait`，与本次两个提交改动的 retention 用例和文档无关。`claim()` 诊断助手在 `02:42:11.776941Z` 的快照中看到唯一 job（`repository.workspace`、`queued`、`attempt=0`）的 `available_at=02:42:15.832830Z`，比同一次快照的服务器 `clock_timestamp()` 晚 **4.056s**，`eligible=[]`、`lease=None`，于是按该助手自身的失败条件报错；该用例隔离重跑 **1 passed in 1.49s**。
+
+**判断：环境抖动，不是产品缺陷。** 证据在仓库外 `C:\Users\Q\AppData\Local\Temp\devflow-suite-runs\`：
+
+| 探针 | 观察 |
+| --- | --- |
+| `clock-probe.log`、`step-impact.log` | test Postgres 容器（`devflow-test-postgres-1`，`postgres:17.11`，127.0.0.1:55439）的 `clock_timestamp()` 每约 **27.7s 向后跳 4.08–4.11s**（两组独立采样共 6 次向后跳变，周期 27.66–27.71s） |
+| `clock-probe2.log` | 同一时段宿主机 `time.time()` 相对 `time.monotonic()` 稳定在 **±10ms**，说明跳变发生在容器侧，不是宿主机 |
+| `step-impact.log` | 跳变瞬间，用 `jobs.available_at` 同一默认值（`clock_timestamp()`）写入的行相对服务器自己的 `clock_timestamp()` 超前 **+4.0906 / +4.0854 / +4.1031s**，与失败现场的 4.056s 吻合 |
+
+`jobs.available_at` 由 `server_default=clock_timestamp()` 写入，产品侧 job 创建与 claim 逻辑本身没有异常；容器时钟非单调，使“入队时写入的时间戳”落到“随后服务器时间”的约 4s 之后。该风险此前已按“测试库时钟偏差”记录（见上），本次把“约 1.8s 落后”细化为“周期性倒跳约 4.1s”，并实测到与失败现场一致的偏移。未修改产品代码、用例或断言，也未加入 sleep/重试。
+
+**本次 5 项与 watchdog 排查的最终状态**：
+
+- 5 个既有失败中 **4 项已修**（迁移 head 断言、3 个原生进程 identity 断言），复跑通过；
+- 第 5 项 `test_another_authorized_member_reads_ready_snapshot_after_creator_disabled` 在追加的 3 轮整套回归与本次 1 轮中均未复现，没有可指认的失败行，维持 **NOT FIXED**，不做推测性修改；
+- `test_drain_to_publish_gap_keeps_exact_attempt_pin` 的 10s 看门狗根因为**测试基础设施**（生产 deadline 600s，10s 只是测试自设窗口），已在 `0b32181` 修复；
+- 遗留且不阻塞收尾：16 核饱和下 supervisor 内 `CreateProcessW` 的 `WinError 5` 触发条件尚未隔离；测试库容器时钟的周期性倒跳会偶发影响“入队后立即 claim”的用例。
 
 ### 未执行项（NOT EXECUTED）
 
